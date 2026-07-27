@@ -1,0 +1,34 @@
+{
+  "name": "client-store-api",
+  "version": "1.0.0",
+  "description": "Node.js API for a white-label e-commerce platform.",
+  "main": "app.js",
+  "engines": {
+    "node": "22.x",
+    "npm": "10.x"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node app.js",
+    "start:dev": "nodemon app.js",
+    "security:smoke": "node scripts/security-smoke.js",
+    "commerce:smoke": "node scripts/commerce-smoke.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "braintree": "^3.0.0",
+    "cookie-parser": "^1.4.5",
+    "cors": "^2.8.5",
+    "dotenv": "^8.2.0",
+    "express": "^4.17.1",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^7.1.0",
+    "i": "^0.3.6",
+    "jsonwebtoken": "^8.5.1",
+    "mongoose": "^5.9.27",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.2",
+    "nodemon": "^2.0.4"
+  }
+}
