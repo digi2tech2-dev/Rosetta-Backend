@@ -23,7 +23,11 @@ class CartController {
       const cart = await cartService.addItem(
         req.auth.userId,
         req.body.productId,
-        req.body.quantity
+        req.body.quantity,
+        {
+          selectedColor: req.body.selectedColor,
+          selectedSize: req.body.selectedSize,
+        }
       );
       return res.status(201).json({ success: true, cart });
     } catch (err) {
@@ -36,7 +40,11 @@ class CartController {
       const cart = await cartService.updateItem(
         req.auth.userId,
         req.params.productId,
-        req.body.quantity
+        req.body.quantity,
+        {
+          selectedColor: req.body.selectedColor,
+          selectedSize: req.body.selectedSize,
+        }
       );
       return res.json({ success: true, cart });
     } catch (err) {
@@ -46,7 +54,10 @@ class CartController {
 
   async removeItem(req, res) {
     try {
-      const cart = await cartService.removeItem(req.auth.userId, req.params.productId);
+      const cart = await cartService.removeItem(req.auth.userId, req.params.productId, {
+        selectedColor: req.query.selectedColor,
+        selectedSize: req.query.selectedSize,
+      });
       return res.json({ success: true, cart });
     } catch (err) {
       return sendError(res, err);

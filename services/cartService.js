@@ -7,6 +7,7 @@ const {
   getEffectiveProductPriceCents,
   moneySummary,
 } = require("./pricingService");
+const { optionIdentity, validateProductOptions } = require("./productOptionService");
 
 function httpError(status, code, message, extra) {
   return Object.assign(new Error(message), { status, code, ...extra });
@@ -57,14 +58,20 @@ async function normalizeCart(cart) {
   const ids = (safeCart.items || []).map((item) => item.product);
   const products = await productModel.find({ _id: { $in: ids } });
   const productMap = new Map(products.map((product) => [String(product._id), product]));
+  const quantitiesByProduct = new Map();
+  for (const item of safeCart.items || []) {
+    const productId = String(item.product);
+    quantitiesByProduct.set(productId, (quantitiesByProduct.get(productId) || 0) + (Number(item.quantity) || 0));
+  }
 
   let subtotalCents = 0;
   let itemCount = 0;
   const items = (safeCart.items || []).map((item) => {
     const product = productMap.get(String(item.product));
     const quantity = Number(item.quantity) || 0;
+    const productCartQuantity = quantitiesByProduct.get(String(item.product)) || quantity;
     const available = Boolean(
-      product && isProductActive(product) && quantity > 0 && product.pQuantity >= quantity
+      product && isProductActive(product) && quantity > 0 && product.pQuantity >= productCartQuantity
     );
     let unitPriceCents = 0;
     if (product) {
@@ -79,6 +86,8 @@ async function normalizeCart(cart) {
       name: product ? product.pName : "Unavailable product",
       image: product && Array.isArray(product.pImages) ? product.pImages[0] : null,
       quantity,
+      selectedColor: item.selectedColor || null,
+      selectedSize: item.selectedSize || null,
       stock: product ? Number(product.pQuantity) || 0 : 0,
       unitPrice: fromCents(unitPriceCents),
       lineTotal: fromCents(lineTotalCents),
@@ -99,52 +108,88 @@ async function getCartForUser(userId) {
   return normalizeCart(cart);
 }
 
-function upsertCartItem(cart, productId, quantity) {
-  const existing = cart.items.find((item) => String(item.product) === String(productId));
+function sameCartLine(item, productId, selectedColor, selectedSize) {
+  return (
+    String(item.product) === String(productId) &&
+    optionIdentity(item.selectedColor, item.selectedSize) === optionIdentity(selectedColor, selectedSize)
+  );
+}
+
+function productQuantityInCart(cart, productId, exceptItem) {
+  return (cart.items || []).reduce((sum, item) => {
+    if (item === exceptItem || String(item.product) !== String(productId)) return sum;
+    return sum + (Number(item.quantity) || 0);
+  }, 0);
+}
+
+function upsertCartItem(cart, productId, quantity, options = {}) {
+  const selectedColor = options.selectedColor || null;
+  const selectedSize = options.selectedSize || null;
+  const existing = cart.items.find((item) => sameCartLine(item, productId, selectedColor, selectedSize));
   if (existing) {
     existing.quantity = quantity;
   } else {
     if (cart.items.length >= config.maxCartItems) {
       throw httpError(409, "CONFLICT", `Cart cannot contain more than ${config.maxCartItems} items`);
     }
-    cart.items.push({ product: productId, quantity });
+    cart.items.push({ product: productId, quantity, selectedColor, selectedSize });
   }
 }
 
-async function addItem(userId, productId, quantityValue) {
+async function addItem(userId, productId, quantityValue, optionValues = {}) {
   const quantity = validateQuantity(quantityValue);
   const product = await loadActiveProduct(productId);
+  const options = validateProductOptions({
+    product,
+    selectedColor: optionValues.selectedColor,
+    selectedSize: optionValues.selectedSize,
+  });
   const cart = await getOrCreateCart(userId);
-  const existing = cart.items.find((item) => String(item.product) === String(product._id));
+  const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize));
   const nextQuantity = (existing ? Number(existing.quantity) : 0) + quantity;
-  if (nextQuantity > config.maxItemQuantity || nextQuantity > product.pQuantity) {
+  const nextProductTotal = productQuantityInCart(cart, product._id) + quantity;
+  if (nextQuantity > config.maxItemQuantity || nextProductTotal > product.pQuantity) {
     throw httpError(409, "CONFLICT", "Requested quantity exceeds available stock");
   }
-  upsertCartItem(cart, product._id, nextQuantity);
+  upsertCartItem(cart, product._id, nextQuantity, options);
   await cart.save();
   return normalizeCart(cart);
 }
 
-async function updateItem(userId, productId, quantityValue) {
+async function updateItem(userId, productId, quantityValue, optionValues = {}) {
   const quantity = validateQuantity(quantityValue);
   const product = await loadActiveProduct(productId);
-  if (quantity > product.pQuantity) {
-    throw httpError(409, "CONFLICT", "Requested quantity exceeds available stock");
-  }
+  const options = validateProductOptions({
+    product,
+    selectedColor: optionValues.selectedColor,
+    selectedSize: optionValues.selectedSize,
+  });
   const cart = await getOrCreateCart(userId);
-  const existing = cart.items.find((item) => String(item.product) === String(product._id));
+  const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize));
   if (!existing) {
     throw httpError(404, "NOT_FOUND", "Cart item not found");
+  }
+  if (quantity + productQuantityInCart(cart, product._id, existing) > product.pQuantity) {
+    throw httpError(409, "CONFLICT", "Requested quantity exceeds available stock");
   }
   existing.quantity = quantity;
   await cart.save();
   return normalizeCart(cart);
 }
 
-async function removeItem(userId, productId) {
+async function removeItem(userId, productId, optionValues = {}) {
   validateProductId(productId);
   const cart = await getOrCreateCart(userId);
-  cart.items = cart.items.filter((item) => String(item.product) !== String(productId));
+  const hasOptions = optionValues.selectedColor !== undefined || optionValues.selectedSize !== undefined;
+  const matchingItems = cart.items.filter((item) => String(item.product) === String(productId));
+  if (!hasOptions && matchingItems.length > 1) {
+    throw httpError(409, "CART_ITEM_AMBIGUOUS", "Selected cart item options are required");
+  }
+  cart.items = cart.items.filter((item) => {
+    if (String(item.product) !== String(productId)) return true;
+    if (!hasOptions) return false;
+    return optionIdentity(item.selectedColor, item.selectedSize) !== optionIdentity(optionValues.selectedColor, optionValues.selectedSize);
+  });
   await cart.save();
   return normalizeCart(cart);
 }
@@ -179,31 +224,59 @@ async function syncGuestCart(userId, itemsValue) {
       warnings.push({ productId: String(productId), code: "INVALID_QUANTITY" });
       continue;
     }
-    merged.set(String(productId), (merged.get(String(productId)) || 0) + quantity);
+    const key = `${String(productId)}::${String(raw.selectedColor || "")}::${String(raw.selectedSize || "")}`.toLowerCase();
+    const existing = merged.get(key) || {
+      productId: String(productId),
+      selectedColor: raw.selectedColor,
+      selectedSize: raw.selectedSize,
+      quantity: 0,
+    };
+    existing.quantity += quantity;
+    merged.set(key, existing);
   }
 
   const cart = await getOrCreateCart(userId);
-  for (const [productId, requested] of merged.entries()) {
-    const product = await productModel.findById(productId);
+  for (const mergedItem of merged.values()) {
+    const product = await productModel.findById(mergedItem.productId);
     if (!product || !isProductActive(product)) {
-      warnings.push({ productId, code: "UNAVAILABLE" });
+      warnings.push({ productId: mergedItem.productId, code: "UNAVAILABLE" });
       continue;
     }
+    let options;
+    try {
+      options = validateProductOptions({
+        product,
+        selectedColor: mergedItem.selectedColor,
+        selectedSize: mergedItem.selectedSize,
+      });
+    } catch (err) {
+      warnings.push({ productId: mergedItem.productId, code: err.code || "INVALID_PRODUCT_OPTION" });
+      continue;
+    }
+    const requested = mergedItem.quantity;
     const capped = Math.min(requested, config.maxItemQuantity, Number(product.pQuantity) || 0);
     if (capped < 1) {
-      warnings.push({ productId, code: "OUT_OF_STOCK" });
+      warnings.push({ productId: mergedItem.productId, code: "OUT_OF_STOCK" });
       continue;
     }
     if (capped < requested) {
-      warnings.push({ productId, code: "QUANTITY_REDUCED", quantity: capped });
+      warnings.push({ productId: mergedItem.productId, code: "QUANTITY_REDUCED", quantity: capped });
     }
-    const existing = cart.items.find((item) => String(item.product) === productId);
+    const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize));
+    const availableForLine = Math.max(0, (Number(product.pQuantity) || 0) - productQuantityInCart(cart, product._id, existing));
+    if (availableForLine < 1) {
+      warnings.push({ productId: mergedItem.productId, code: "OUT_OF_STOCK" });
+      continue;
+    }
     const nextQuantity = Math.min(
       (existing ? Number(existing.quantity) : 0) + capped,
       config.maxItemQuantity,
-      Number(product.pQuantity) || 0
+      availableForLine
     );
-    upsertCartItem(cart, product._id, nextQuantity);
+    if (nextQuantity < (existing ? Number(existing.quantity) : 0) + requested) {
+      warnings.push({ productId: mergedItem.productId, code: "QUANTITY_REDUCED", quantity: nextQuantity });
+    }
+    upsertCartItem(cart, product._id, nextQuantity, options);
   }
   await cart.save();
   return { cart: await normalizeCart(cart), warnings };

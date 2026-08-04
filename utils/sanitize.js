@@ -1,21 +1,11 @@
+const { serializeCustomerSelf } = require("../services/customerSerializer");
+
 function sanitizeUser(user) {
   if (!user) {
     return user;
   }
 
-  const source = typeof user.toObject === "function" ? user.toObject() : { ...user };
-  delete source.password;
-  delete source.secretKey;
-  delete source.__v;
-
-  if (source._id && !source.id) {
-    source.id = String(source._id);
-  }
-  if (source.userRole !== undefined && source.role === undefined) {
-    source.role = source.userRole;
-  }
-
-  return source;
+  return serializeCustomerSelf(user);
 }
 
 function sanitizeUsers(users) {

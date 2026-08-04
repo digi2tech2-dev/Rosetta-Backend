@@ -23,6 +23,56 @@ const productSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    pCost: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+    pBarcode: {
+      type: String,
+      trim: true,
+    },
+    pBrand: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 120,
+    },
+    pVideo: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 500,
+    },
+    pColors: {
+      type: [String],
+      default: [],
+    },
+    pSizes: {
+      type: [String],
+      default: [],
+    },
+    pColorImages: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    inventoryMode: {
+      type: String,
+      enum: ["simple", "shared_options"],
+      default: "simple",
+    },
+    relatedProducts: [{
+      type: ObjectId,
+      ref: "products",
+    }],
+    similarProducts: [{
+      type: ObjectId,
+      ref: "products",
+    }],
+    suggestedProducts: [{
+      type: ObjectId,
+      ref: "products",
+    }],
     pCategory: {
       type: ObjectId,
       ref: "categories",
@@ -52,6 +102,14 @@ const productSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+productSchema.index(
+  { pBarcode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { pBarcode: { $type: "string" } },
+  }
 );
 
 const productModel = mongoose.model("products", productSchema);

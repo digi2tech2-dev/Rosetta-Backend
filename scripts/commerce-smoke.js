@@ -11,7 +11,7 @@ const orderModel = require("../models/orders");
 const cartModel = require("../models/carts");
 const orderService = require("../services/orderService");
 
-const REQUIRED_DB = "client_store_phase2c_disposable";
+const REQUIRED_DB = process.env.COMMERCE_SMOKE_DATABASE_NAME || "client_store_phase2c_disposable";
 const PORT = Number(process.env.PORT || 8050);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const TEST_PREFIX = "phase2c-smoke-";
@@ -321,13 +321,13 @@ async function main() {
       assert(res.body.warnings.some((warning) => warning.code === "UNAVAILABLE"), "missing unavailable warning");
     });
 
-    await test("COD order requires authentication", async () => {
+    await test("Guest COD requires guest identity and cart details", async () => {
       const res = await request("/api/order/create-cod-order", {
         method: "POST",
         headers: { "Idempotency-Key": `${TEST_PREFIX}no-auth` },
         body: { shippingAddress },
       });
-      assert(res.status === 401, "COD should require auth");
+      assert(res.status === 400, "guest COD without guest details should fail validation");
     });
 
     await test("COD order rejects empty cart", async () => {

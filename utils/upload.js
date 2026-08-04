@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const path = require("path");
 const multer = require("multer");
 const { config } = require("../config/appConfig");
+const { uploadFolderPath } = require("./uploadPaths");
 
 const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
@@ -25,7 +26,7 @@ function imageFileFilter(req, file, cb) {
 function imageUpload(folder, maxFiles) {
   const storage = multer.diskStorage({
     destination(req, file, cb) {
-      cb(null, path.join("public", "uploads", folder));
+      cb(null, uploadFolderPath(folder));
     },
     filename(req, file, cb) {
       cb(null, safeUploadName(file));

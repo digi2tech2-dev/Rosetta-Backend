@@ -6,9 +6,10 @@ const orderModel = require("../models/orders");
 const userModel = require("../models/users");
 const customizeModel = require("../models/customize");
 const { isValidObjectId } = require("../utils/validation");
+const { uploadFolderPath } = require("../utils/uploadPaths");
 
 function safeUnlinkCustomize(filename) {
-  const basePath = path.resolve(__dirname, "..", "public", "uploads", "customize");
+  const basePath = uploadFolderPath("customize");
   const safeFileName = path.basename(String(filename || ""));
   if (!safeFileName) {
     return;

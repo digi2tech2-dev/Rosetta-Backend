@@ -31,49 +31,136 @@ function extractBearerToken(req) {
   return parts[1];
 }
 
+function isBlocked(user) {
+  return user && (user.status === "blocked" || user.status === "disabled");
+}
+
+function tokenVersionValid(decoded, currentUser) {
+  const currentVersion = currentUser.tokenVersion || 0;
+  const tokenVersion = decoded.tokenVersion ?? decoded.tv;
+  if (tokenVersion === undefined || tokenVersion === null) {
+    return currentVersion === 0;
+  }
+  return Number(tokenVersion) === currentVersion;
+}
+
+function authError(res, status, code, error) {
+  return res.status(status).json({
+    success: false,
+    code,
+    error,
+  });
+}
+
 async function requireAuth(req, res, next) {
   try {
     const token = extractBearerToken(req);
     if (token === null) {
-      return res.status(401).json({
-        success: false,
-        error: "Authentication token is required",
-      });
+      return authError(res, 401, "AUTH_REQUIRED", "Authentication token is required");
     }
     if (token === false) {
-      return res.status(401).json({
-        success: false,
-        error: "Authentication token must use Bearer format",
-      });
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token must use Bearer format");
     }
 
     let decoded;
     try {
       decoded = jwt.verify(token, config.jwtSecret);
     } catch (err) {
-      return res.status(401).json({
-        success: false,
-        error: "Authentication token is invalid or expired",
-      });
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token is invalid or expired");
     }
 
     if (!decoded || !decoded._id) {
-      return res.status(401).json({
-        success: false,
-        error: "Authentication token is invalid or expired",
-      });
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token is invalid or expired");
     }
 
     const currentUser = await userModel.findById(decoded._id);
-    if (!currentUser || currentUser.status === "disabled") {
-      return res.status(401).json({
-        success: false,
-        error: "Authentication token is invalid or expired",
-      });
+    if (!currentUser) {
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token is invalid or expired");
+    }
+    if (isBlocked(currentUser)) {
+      return authError(res, 403, "ACCOUNT_BLOCKED", "Account is blocked");
+    }
+    if (!tokenVersionValid(decoded, currentUser)) {
+      return authError(res, 401, "SESSION_EXPIRED", "Session has expired. Please sign in again.");
     }
 
     const safeUser = sanitizeUser(currentUser);
     req.user = safeUser;
+    req.auth = {
+      userId: String(currentUser._id),
+      role: currentUser.userRole,
+    };
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function optionalAuth(req, res, next) {
+  try {
+    const token = extractBearerToken(req);
+    if (!token) {
+      return next();
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, config.jwtSecret);
+    } catch (err) {
+      return next();
+    }
+    if (!decoded || !decoded._id) {
+      return next();
+    }
+
+    const currentUser = await userModel.findById(decoded._id);
+    if (!currentUser || isBlocked(currentUser) || !tokenVersionValid(decoded, currentUser)) {
+      return next();
+    }
+
+    req.user = sanitizeUser(currentUser);
+    req.auth = {
+      userId: String(currentUser._id),
+      role: currentUser.userRole,
+    };
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function optionalCheckoutAuth(req, res, next) {
+  try {
+    const token = extractBearerToken(req);
+    if (token === null) {
+      return next();
+    }
+    if (token === false) {
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token must use Bearer format");
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, config.jwtSecret);
+    } catch (err) {
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token is invalid or expired");
+    }
+    if (!decoded || !decoded._id) {
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token is invalid or expired");
+    }
+
+    const currentUser = await userModel.findById(decoded._id);
+    if (!currentUser) {
+      return authError(res, 401, "INVALID_TOKEN", "Authentication token is invalid or expired");
+    }
+    if (isBlocked(currentUser)) {
+      return authError(res, 403, "ACCOUNT_BLOCKED", "Account is blocked");
+    }
+    if (!tokenVersionValid(decoded, currentUser)) {
+      return authError(res, 401, "SESSION_EXPIRED", "Session has expired. Please sign in again.");
+    }
+
+    req.user = sanitizeUser(currentUser);
     req.auth = {
       userId: String(currentUser._id),
       role: currentUser.userRole,
@@ -127,6 +214,8 @@ function requireSelfOrRole(getTargetUserId, ...roles) {
 }
 
 module.exports = {
+  optionalAuth,
+  optionalCheckoutAuth,
   requireAuth,
   requireRole,
   requireSelfOrRole,

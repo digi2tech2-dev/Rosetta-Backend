@@ -19,6 +19,14 @@ const cartItemSchema = new mongoose.Schema(
         message: "Cart item quantity must be a whole number",
       },
     },
+    selectedColor: {
+      type: String,
+      default: null,
+    },
+    selectedSize: {
+      type: String,
+      default: null,
+    },
   },
   { _id: false }
 );
@@ -39,7 +47,7 @@ const cartSchema = new mongoose.Schema(
         validator(items) {
           const seen = new Set();
           for (const item of items || []) {
-            const id = String(item.product);
+            const id = `${String(item.product)}::${item.selectedColor || ""}::${item.selectedSize || ""}`.toLowerCase();
             if (seen.has(id)) {
               return false;
             }

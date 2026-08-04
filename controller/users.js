@@ -145,9 +145,12 @@ class User {
         return res.status(400).json({ error: "uId must be a valid id" });
       }
 
-      const update = { status: "disabled", updatedAt: Date.now() };
-      if (req.body.status === "active" || req.body.status === "disabled") {
+      const update = { status: "blocked", updatedAt: Date.now(), $inc: { tokenVersion: 1 } };
+      if (req.body.status === "active" || req.body.status === "blocked") {
         update.status = req.body.status;
+        if (req.body.status === "active") {
+          delete update.$inc;
+        }
       }
 
       const updatedUser = await userModel.findByIdAndUpdate(uId, update, {
@@ -183,6 +186,13 @@ class User {
       if (!data) {
         return res.status(401).json({ error: "Invalid user" });
       }
+      if (!data.password || (data.authProviders && data.authProviders.local && data.authProviders.local.enabled === false)) {
+        return res.status(400).json({
+          success: false,
+          code: "LOCAL_PASSWORD_NOT_SET",
+          error: "Use password recovery to set a password before changing it.",
+        });
+      }
 
       const oldPassCheck = await bcrypt.compare(oldPassword, data.password);
       if (!oldPassCheck) {
@@ -190,6 +200,16 @@ class User {
       }
 
       data.password = bcrypt.hashSync(newPassword, 10);
+      data.authProviders = data.authProviders || {};
+      data.authProviders.local = { ...(data.authProviders.local || {}), enabled: true };
+      data.passwordChangedAt = new Date();
+      data.tokenVersion = (data.tokenVersion || 0) + 1;
+      data.resetCodeHash = null;
+      data.resetCodeExpiresAt = null;
+      data.resetCodeAttempts = 0;
+      data.resetCodeRequestedAt = null;
+      data.resetTokenHash = null;
+      data.resetTokenExpiresAt = null;
       await data.save();
       return res.json({ success: "Password updated successfully" });
     } catch (err) {

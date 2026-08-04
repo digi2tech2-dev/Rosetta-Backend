@@ -3,9 +3,10 @@ const categoryModel = require("../models/categories");
 const fs = require("fs");
 const path = require("path");
 const { isValidObjectId } = require("../utils/validation");
+const { uploadFolderPath } = require("../utils/uploadPaths");
 
 function safeUnlinkCategory(filename) {
-  const basePath = path.resolve(__dirname, "..", "public", "uploads", "categories");
+  const basePath = uploadFolderPath("categories");
   const safeFileName = path.basename(String(filename || ""));
   if (!safeFileName) {
     return;

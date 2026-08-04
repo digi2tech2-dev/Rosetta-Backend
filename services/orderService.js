@@ -6,14 +6,28 @@ const cartModel = require("../models/carts");
 const { config } = require("../config/appConfig");
 const { isValidObjectId } = require("../utils/validation");
 const { isProductActive } = require("./cartService");
+const { validateProductOptions } = require("./productOptionService");
 const {
+  calculateCheckoutPricing,
+  calculateGuestCheckoutPricing,
   fromCents,
   getEffectiveProductPriceCents,
   moneySummary,
+  releaseCouponUsage,
+  reserveCouponUsage,
 } = require("./pricingService");
+const {
+  assertGuestNotBlocked,
+  generateTrackingToken,
+  guestIdentityHash,
+  normalizeGuestCartItems,
+  normalizeGuestCustomer,
+  publicGuestCustomer,
+  verifyTrackingToken,
+} = require("./guestCheckoutService");
 
 const ORDER_STATUSES = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"];
-const PAYMENT_STATUSES = ["unpaid", "paid", "refunded", "failed"];
+const PAYMENT_STATUSES = ["unpaid", "pending", "paid", "refunded", "failed", "expired", "cancelled", "manual_review"];
 const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
   confirmed: ["processing", "cancelled"],
@@ -29,6 +43,12 @@ function httpError(status, code, message, extra) {
 
 function hashPayload(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function generateOrderNumber() {
+  const time = Date.now().toString(36).toUpperCase();
+  const random = crypto.randomBytes(4).toString("hex").toUpperCase();
+  return `R${time}${random}`;
 }
 
 function validateIdempotencyKey(key) {
@@ -63,6 +83,8 @@ function validateShippingAddress(raw) {
   const allowed = new Set([
     "fullName",
     "phone",
+    "alternatePhone",
+    "governorate",
     "city",
     "area",
     "street",
@@ -80,10 +102,14 @@ function validateShippingAddress(raw) {
   if (!/^[0-9+\-\s()]{6,32}$/.test(phone)) {
     throw httpError(400, "VALIDATION_ERROR", "Phone number is invalid");
   }
+  const governorate = cleanText(value.governorate || value.city, 120, true);
+  const city = cleanText(value.governorate ? value.city : value.area, 120, true);
   return {
     fullName: cleanText(value.fullName, 120, true),
     phone,
-    city: cleanText(value.city, 120, true),
+    alternatePhone: cleanText(value.alternatePhone, 32, false),
+    governorate,
+    city,
     area: cleanText(value.area, 120, false),
     street: cleanText(value.street, 180, true),
     building: cleanText(value.building, 80, false),
@@ -137,6 +163,8 @@ function normalizeOrder(order) {
         unitPrice: item.unitPrice,
         quantity: item.quantity,
         lineTotal: item.lineTotal,
+        selectedColor: item.selectedColor || null,
+        selectedSize: item.selectedSize || null,
       }))
     : (doc.allProduct || []).map((item) => ({
         productId: String(item.id && item.id._id ? item.id._id : item.id),
@@ -145,15 +173,28 @@ function normalizeOrder(order) {
         unitPrice: item.id && item.id.pPrice ? item.id.pPrice : 0,
         quantity: item.quantitiy || 0,
         lineTotal: (item.quantitiy || 0) * (item.id && item.id.pPrice ? item.id.pPrice : 0),
+        selectedColor: item.selectedColor || null,
+        selectedSize: item.selectedSize || null,
       }));
 
   return {
     _id: String(doc._id),
     id: String(doc._id),
     user: doc.user,
+    customerType: doc.customerType || "registered",
+    guestCustomer: doc.customerType === "guest" ? publicGuestCustomer(doc.guestCustomer || {}) : null,
+    orderNumber: doc.orderNumber || "",
     items,
     allProduct: doc.allProduct || [],
     subtotal: doc.subtotal !== undefined ? doc.subtotal : doc.amount || 0,
+    merchandiseSubtotal: doc.pricingSnapshot?.merchandiseSubtotal ?? doc.subtotal ?? doc.amount ?? 0,
+    discountTotal: doc.discountTotal || doc.pricingSnapshot?.discountTotal || 0,
+    discount: doc.discountTotal || doc.pricingSnapshot?.discountTotal || 0,
+    discountSource: doc.discountSource || doc.pricingSnapshot?.discountSource || "none",
+    couponCode: doc.couponCode || doc.pricingSnapshot?.couponSnapshot?.code || "",
+    couponSnapshot: doc.pricingSnapshot?.couponSnapshot || null,
+    firstOrderPromotionSnapshot: doc.pricingSnapshot?.firstOrderPromotionSnapshot || null,
+    pricingSnapshot: doc.pricingSnapshot || null,
     shippingFee: doc.shippingFee || 0,
     total: doc.total !== undefined ? doc.total : doc.amount || 0,
     amount: doc.amount !== undefined ? doc.amount : doc.total || 0,
@@ -172,7 +213,11 @@ function normalizeOrder(order) {
     address: doc.address,
     phone: doc.phone,
     paymentMethod: doc.paymentMethod || "legacy_braintree",
+    paymentProvider: doc.paymentProvider || null,
+    paymentAttempt: doc.paymentAttempt ? String(doc.paymentAttempt) : null,
     paymentStatus,
+    providerTransactionId: doc.providerTransactionId || doc.transactionId || "",
+    paymentExpiresAt: doc.paymentExpiresAt || null,
     orderStatus: canonicalStatus,
     status: canonicalToLegacyStatus(canonicalStatus),
     transactionId: doc.transactionId || "",
@@ -191,6 +236,11 @@ async function buildCartOrder(userId) {
   const ids = cart.items.map((item) => item.product);
   const products = await productModel.find({ _id: { $in: ids } });
   const productMap = new Map(products.map((product) => [String(product._id), product]));
+  const quantitiesByProduct = new Map();
+  for (const cartItem of cart.items) {
+    const productId = String(cartItem.product);
+    quantitiesByProduct.set(productId, (quantitiesByProduct.get(productId) || 0) + (Number(cartItem.quantity) || 0));
+  }
 
   let subtotalCents = 0;
   const items = [];
@@ -206,6 +256,14 @@ async function buildCartOrder(userId) {
     if (Number(product.pQuantity) < quantity) {
       throw httpError(409, "CONFLICT", "A cart item exceeds available stock");
     }
+    if (Number(product.pQuantity) < quantitiesByProduct.get(String(product._id))) {
+      throw httpError(409, "CONFLICT", "Cart quantity exceeds shared product stock");
+    }
+    const options = validateProductOptions({
+      product,
+      selectedColor: cartItem.selectedColor,
+      selectedSize: cartItem.selectedSize,
+    });
     const unitPriceCents = getEffectiveProductPriceCents(product);
     const lineTotalCents = unitPriceCents * quantity;
     subtotalCents += lineTotalCents;
@@ -217,6 +275,8 @@ async function buildCartOrder(userId) {
       unitPrice: fromCents(unitPriceCents),
       quantity,
       lineTotal: fromCents(lineTotalCents),
+      selectedColor: options.selectedColor,
+      selectedSize: options.selectedSize,
     });
   }
 
@@ -276,8 +336,10 @@ async function restoreStock(items) {
 async function createCodOrder(userId, body, idempotencyHeader) {
   const idempotencyKey = validateIdempotencyKey(idempotencyHeader || body.idempotencyKey);
   const shippingAddress = validateShippingAddress(body.shippingAddress);
+  const couponCode = String(body.couponCode || "").trim();
+  const savedAddressId = body.savedAddressId;
   const customerNote = cleanText(body.customerNote, 500, false);
-  const payloadHash = hashPayload({ shippingAddress, customerNote });
+  const payloadHash = hashPayload({ shippingAddress, savedAddressId: savedAddressId || "", couponCode, customerNote });
 
   const existing = await orderModel.findOne({ user: userId, idempotencyKey });
   if (existing) {
@@ -287,9 +349,23 @@ async function createCodOrder(userId, body, idempotencyHeader) {
     return { order: normalizeOrder(existing), reused: true };
   }
 
-  const checkout = await buildCartOrder(userId);
-  const deducted = await deductStock(checkout.items);
+  const checkout = await calculateCheckoutPricing({
+    customerId: userId,
+    shippingAddress,
+    savedAddressId,
+    couponCode,
+  });
+  const orderId = new mongoose.Types.ObjectId();
+  let redemption = null;
+  const deducted = [];
   try {
+    redemption = await reserveCouponUsage({
+      coupon: checkout.coupon,
+      customerId: userId,
+      orderId,
+      amount: checkout.pricingSnapshot.discountTotal,
+    });
+    deducted.push(...(await deductStock(checkout.items)));
     const snapshots = checkout.items.map((item) => ({
       product: item.productId,
       name: item.name,
@@ -297,29 +373,42 @@ async function createCodOrder(userId, body, idempotencyHeader) {
       unitPrice: item.unitPrice,
       quantity: item.quantity,
       lineTotal: item.lineTotal,
+      selectedColor: item.selectedColor || null,
+      selectedSize: item.selectedSize || null,
     }));
     const order = await orderModel.create({
+      _id: orderId,
       user: userId,
+      customerType: "registered",
+      orderNumber: generateOrderNumber(),
       items: snapshots,
       allProduct: checkout.items.map((item) => ({
         id: item.productId,
         quantitiy: item.quantity,
+        selectedColor: item.selectedColor || null,
+        selectedSize: item.selectedSize || null,
       })),
-      subtotal: checkout.summary.subtotal,
+      subtotal: checkout.summary.merchandiseSubtotal,
+      discountTotal: checkout.summary.discountTotal,
+      discountSource: checkout.pricingSnapshot.discountSource,
       shippingFee: checkout.summary.shippingFee,
-      total: checkout.summary.total,
-      amount: checkout.summary.total,
+      total: checkout.summary.grandTotal,
+      amount: checkout.summary.grandTotal,
       currency: checkout.summary.currency,
-      shippingAddress,
-      address: [shippingAddress.street, shippingAddress.area, shippingAddress.city]
+      shippingAddress: checkout.shippingAddress,
+      address: [checkout.shippingAddress.street, checkout.shippingAddress.city, checkout.shippingAddress.governorate]
         .filter(Boolean)
         .join(", "),
-      phone: Number(String(shippingAddress.phone).replace(/\D/g, "").slice(0, 15)) || 0,
+      phone: Number(String(checkout.shippingAddress.phone).replace(/\D/g, "").slice(0, 15)) || 0,
       paymentMethod: "cash_on_delivery",
       paymentStatus: "unpaid",
       orderStatus: "pending",
       status: "Not processed",
       customerNote,
+      coupon: checkout.coupon ? checkout.coupon._id : null,
+      couponCode: checkout.pricingSnapshot.couponSnapshot?.code || "",
+      couponRedemption: redemption ? redemption._id : null,
+      pricingSnapshot: checkout.pricingSnapshot,
       idempotencyKey,
       idempotencyPayloadHash: payloadHash,
       inventoryApplied: true,
@@ -338,6 +427,122 @@ async function createCodOrder(userId, body, idempotencyHeader) {
     return { order: normalizeOrder(order), reused: false };
   } catch (err) {
     await restoreStock(deducted);
+    if (redemption && checkout.coupon) {
+      await releaseCouponUsage({ couponId: checkout.coupon._id, customerId: userId, orderId });
+    }
+    throw err;
+  }
+}
+
+async function createGuestCodOrder(body, idempotencyHeader) {
+  const idempotencyKey = validateIdempotencyKey(idempotencyHeader || body.idempotencyKey);
+  const guestCustomer = normalizeGuestCustomer(body.guestCustomer || {});
+  await assertGuestNotBlocked(guestCustomer);
+  const shippingAddress = validateShippingAddress(body.shippingAddress);
+  const cartItems = normalizeGuestCartItems(body.cartItems);
+  const couponCode = String(body.couponCode || "").trim();
+  const customerNote = cleanText(body.customerNote, 500, false);
+  const idempotencyScope = `guest:${guestIdentityHash(guestCustomer)}:cod`;
+  const payloadHash = hashPayload({ guestCustomer, shippingAddress, cartItems, couponCode, customerNote });
+
+  const existing = await orderModel
+    .findOne({ customerType: "guest", idempotencyScope, idempotencyKey })
+    .select("+guestTrackingTokenHash");
+  if (existing) {
+    if (existing.idempotencyPayloadHash !== payloadHash) {
+      throw httpError(409, "CONFLICT", "Idempotency key was reused with a different payload");
+    }
+    return { order: normalizeOrder(existing), reused: true, guestTracking: null };
+  }
+
+  const checkout = await calculateGuestCheckoutPricing({
+    cartItems,
+    shippingAddress,
+    couponCode,
+  });
+  const orderId = new mongoose.Types.ObjectId();
+  const tracking = generateTrackingToken();
+  let redemption = null;
+  const deducted = [];
+  try {
+    redemption = await reserveCouponUsage({
+      coupon: checkout.coupon,
+      customerId: null,
+      orderId,
+      amount: checkout.pricingSnapshot.discountTotal,
+    });
+    deducted.push(...(await deductStock(checkout.items)));
+    const snapshots = checkout.items.map((item) => ({
+      product: item.productId,
+      name: item.name,
+      image: item.image,
+      unitPrice: item.unitPrice,
+      quantity: item.quantity,
+      lineTotal: item.lineTotal,
+      selectedColor: item.selectedColor || null,
+      selectedSize: item.selectedSize || null,
+    }));
+    const order = await orderModel.create({
+      _id: orderId,
+      customerType: "guest",
+      guestCustomer,
+      guestTrackingTokenHash: tracking.hash,
+      guestTrackingTokenCreatedAt: new Date(),
+      orderNumber: generateOrderNumber(),
+      items: snapshots,
+      allProduct: checkout.items.map((item) => ({
+        id: item.productId,
+        quantitiy: item.quantity,
+        selectedColor: item.selectedColor || null,
+        selectedSize: item.selectedSize || null,
+      })),
+      subtotal: checkout.summary.merchandiseSubtotal,
+      discountTotal: checkout.summary.discountTotal,
+      discountSource: checkout.pricingSnapshot.discountSource,
+      shippingFee: checkout.summary.shippingFee,
+      total: checkout.summary.grandTotal,
+      amount: checkout.summary.grandTotal,
+      currency: checkout.summary.currency,
+      shippingAddress: checkout.shippingAddress,
+      address: [checkout.shippingAddress.street, checkout.shippingAddress.city, checkout.shippingAddress.governorate]
+        .filter(Boolean)
+        .join(", "),
+      phone: Number(String(checkout.shippingAddress.phone).replace(/\D/g, "").slice(0, 15)) || 0,
+      paymentMethod: "cash_on_delivery",
+      paymentStatus: "unpaid",
+      orderStatus: "pending",
+      status: "Not processed",
+      customerNote,
+      coupon: checkout.coupon ? checkout.coupon._id : null,
+      couponCode: checkout.pricingSnapshot.couponSnapshot?.code || "",
+      couponRedemption: redemption ? redemption._id : null,
+      pricingSnapshot: checkout.pricingSnapshot,
+      idempotencyKey,
+      idempotencyScope,
+      idempotencyPayloadHash: payloadHash,
+      inventoryApplied: true,
+      inventoryRestored: false,
+      statusHistory: [
+        {
+          status: "pending",
+          paymentStatus: "unpaid",
+          note: "Guest Cash on Delivery order created",
+        },
+      ],
+    });
+    return {
+      order: normalizeOrder(order),
+      reused: false,
+      guestTracking: {
+        orderNumber: order.orderNumber,
+        trackingToken: tracking.token,
+      },
+    };
+  } catch (err) {
+    await restoreStock(deducted);
+    if (redemption && checkout.coupon) {
+      await releaseCouponUsage({ couponId: checkout.coupon._id, customerId: null, orderId });
+    }
     throw err;
   }
 }
@@ -445,6 +650,9 @@ async function updateStatus(orderId, nextStatus, adminUserId) {
     await restoreStock(stockItems);
     order.inventoryRestored = true;
   }
+  if (nextStatus === "cancelled" && order.coupon && order.couponRedemption) {
+    await releaseCouponUsage({ couponId: order.coupon, customerId: order.user || null, orderId: order._id });
+  }
   if (nextStatus === "delivered" && order.paymentMethod === "cash_on_delivery") {
     order.paymentStatus = "paid";
   }
@@ -464,15 +672,61 @@ async function updateStatus(orderId, nextStatus, adminUserId) {
   return normalizeOrder(order);
 }
 
+async function getGuestOrderStatus({ orderNumber, trackingToken }) {
+  const normalizedOrderNumber = String(orderNumber || "").trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{8,40}$/.test(normalizedOrderNumber)) {
+    throw httpError(400, "VALIDATION_ERROR", "orderNumber is invalid");
+  }
+  if (!trackingToken || typeof trackingToken !== "string" || trackingToken.length < 32 || trackingToken.length > 200) {
+    throw httpError(400, "VALIDATION_ERROR", "trackingToken is invalid");
+  }
+  const order = await orderModel
+    .findOne({ customerType: "guest", orderNumber: normalizedOrderNumber })
+    .select("+guestTrackingTokenHash");
+  if (!order || !verifyTrackingToken(order, trackingToken)) {
+    throw httpError(404, "ORDER_NOT_FOUND", "Order was not found");
+  }
+  return {
+    orderId: String(order._id),
+    orderNumber: order.orderNumber,
+    customerType: "guest",
+    guestCustomer: publicGuestCustomer(order.guestCustomer || {}),
+    paymentStatus: order.paymentStatus || "unpaid",
+    orderStatus: order.orderStatus || "pending",
+    paymentMethod: order.paymentMethod,
+    total: order.total,
+    currency: order.currency,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+    items: (order.items || []).map((item) => ({
+      name: item.name,
+      image: item.image,
+      quantity: item.quantity,
+      selectedColor: item.selectedColor || null,
+      selectedSize: item.selectedSize || null,
+    })),
+  };
+}
+
 module.exports = {
   ALLOWED_TRANSITIONS,
   ORDER_STATUSES,
   PAYMENT_STATUSES,
+  canonicalToLegacyStatus,
+  cleanText,
   createCodOrder,
+  createGuestCodOrder,
+  deductStock,
+  generateOrderNumber,
   getAdminOrder,
+  getGuestOrderStatus,
   getMyOrder,
+  hashPayload,
   listAdminOrders,
   listMyOrders,
   normalizeOrder,
+  restoreStock,
   updateStatus,
+  validateIdempotencyKey,
+  validateShippingAddress,
 };

@@ -6,12 +6,23 @@ const userModel = require("../models/users");
 const { assertLocalMongoDatabase } = require("../utils/localDatabase");
 const { normalizeEmail } = require("../utils/validation");
 
+function isProduction() {
+  return String(process.env.NODE_ENV || "").toLowerCase() === "production";
+}
+
 async function main() {
-  assertLocalMongoDatabase(process.env.DATABASE);
+  if (isProduction() && process.env.ADMIN_CREATE_CONFIRM !== "true") {
+    throw new Error("ADMIN_CREATE_CONFIRM=true is required when NODE_ENV=production");
+  }
+  if (process.env.ADMIN_ALLOW_REMOTE !== "true") {
+    assertLocalMongoDatabase(process.env.DATABASE);
+  }
 
   const name = String(process.env.ADMIN_NAME || "").trim();
   const email = normalizeEmail(process.env.ADMIN_EMAIL);
   const password = process.env.ADMIN_PASSWORD;
+  const allowPromoteExisting = process.env.ADMIN_ALLOW_PROMOTE_EXISTING === "true";
+  const rotateExisting = process.env.ADMIN_ROTATE_EXISTING === "true";
 
   if (!name || !email || !password) {
     throw new Error("ADMIN_NAME, ADMIN_EMAIL, and ADMIN_PASSWORD are required");
@@ -29,11 +40,27 @@ async function main() {
   const existingUser = await userModel.findOne({ email }).select("+password");
   if (existingUser) {
     if (existingUser.userRole !== 1) {
+      if (!allowPromoteExisting) {
+        throw new Error("Refusing to promote an existing customer without ADMIN_ALLOW_PROMOTE_EXISTING=true");
+      }
       existingUser.userRole = 1;
+      if (rotateExisting) {
+        existingUser.password = bcrypt.hashSync(password, 10);
+        existingUser.passwordChangedAt = new Date();
+        existingUser.tokenVersion = (existingUser.tokenVersion || 0) + 1;
+      }
       await existingUser.save();
-      console.log("Existing local user promoted to administrator.");
+      console.log("Existing user promoted to administrator.");
     } else {
-      console.log("Administrator already exists for the supplied email.");
+      if (rotateExisting) {
+        existingUser.password = bcrypt.hashSync(password, 10);
+        existingUser.passwordChangedAt = new Date();
+        existingUser.tokenVersion = (existingUser.tokenVersion || 0) + 1;
+        await existingUser.save();
+        console.log("Existing administrator password rotated.");
+      } else {
+        console.log("Administrator already exists for the supplied email.");
+      }
     }
     return;
   }

@@ -57,16 +57,31 @@ class Order {
 
   async createCodOrder(req, res) {
     try {
-      const result = await orderService.createCodOrder(
-        req.auth.userId,
-        req.body,
-        req.headers["idempotency-key"]
-      );
+      if (req.auth && Number(req.auth.role) !== 0) {
+        throw Object.assign(new Error("Access denied"), { status: 403, code: "ACCESS_DENIED" });
+      }
+      const result = req.auth
+        ? await orderService.createCodOrder(
+            req.auth.userId,
+            req.body,
+            req.headers["idempotency-key"]
+          )
+        : await orderService.createGuestCodOrder(req.body, req.headers["idempotency-key"]);
       return res.status(result.reused ? 200 : 201).json({
         success: true,
         reused: result.reused,
         order: result.order,
+        guestTracking: result.guestTracking || null,
       });
+    } catch (err) {
+      return this.sendServiceError(res, err);
+    }
+  }
+
+  async trackGuestOrder(req, res) {
+    try {
+      const order = await orderService.getGuestOrderStatus(req.body || {});
+      return res.json({ success: true, order });
     } catch (err) {
       return this.sendServiceError(res, err);
     }

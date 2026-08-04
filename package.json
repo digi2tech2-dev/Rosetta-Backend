@@ -12,7 +12,18 @@
     "start": "node app.js",
     "start:dev": "nodemon app.js",
     "security:smoke": "node scripts/security-smoke.js",
-    "commerce:smoke": "node scripts/commerce-smoke.js"
+    "commerce:smoke": "node scripts/commerce-smoke.js",
+    "product:smoke": "node scripts/product-catalog-smoke.js",
+    "product:migration": "node scripts/product-catalog-migration.js --dry-run",
+    "customer:smoke": "node scripts/customer-auth-smoke.js",
+    "google:smoke": "node scripts/google-auth-smoke.js",
+    "pricing:smoke": "node scripts/pricing-shipping-smoke.js",
+    "paymob:smoke": "node scripts/paymob-payment-smoke.js",
+    "guest:smoke": "node scripts/guest-checkout-smoke.js",
+    "payment:expire": "node scripts/payment-expiry-sweep.js",
+    "database:readiness": "node scripts/database-readiness.js",
+    "admin:create": "node scripts/create-admin.js",
+    "release:check": "node scripts/release-readiness.js"
   },
   "license": "ISC",
   "dependencies": {
@@ -23,12 +34,14 @@
     "dotenv": "^8.2.0",
     "express": "^4.17.1",
     "express-rate-limit": "^7.4.1",
+    "google-auth-library": "^11.0.0",
     "helmet": "^7.1.0",
     "i": "^0.3.6",
     "jsonwebtoken": "^8.5.1",
     "mongoose": "^5.9.27",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.2",
+    "nodemailer": "^9.0.3",
     "nodemon": "^2.0.4"
   }
 }

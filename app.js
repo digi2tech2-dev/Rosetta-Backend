@@ -9,6 +9,11 @@ const { config, validateConfig } = require("./config/appConfig");
 const app = express();
 
 validateConfig();
+app.disable("x-powered-by");
+
+if (config.trustProxy) {
+  app.set("trust proxy", config.trustProxy === "true" ? true : config.trustProxy);
+}
 
 const authRouter = require("./routes/auth");
 const categoryRouter = require("./routes/categories");
@@ -17,6 +22,9 @@ const brainTreeRouter = require("./routes/braintree");
 const orderRouter = require("./routes/orders");
 const cartRouter = require("./routes/cart");
 const usersRouter = require("./routes/users");
+const customerAccountsRouter = require("./routes/customerAccounts");
+const commerceRouter = require("./routes/commerce");
+const paymentsRouter = require("./routes/payments");
 const customizeRouter = require("./routes/customize");
 const CreateAllFolder = require("./config/uploadFolderCreateScript");
 
@@ -42,6 +50,7 @@ app.use(morgan(config.nodeEnv === "test" ? "tiny" : "dev"));
 app.use(cookieParser());
 app.use(cors(corsOptions));
 app.use(express.static("public"));
+app.use(config.uploadPublicPath, express.static(config.uploadRoot));
 app.use(express.urlencoded({ extended: false, limit: config.maxJsonBodySize }));
 app.use(express.json({ limit: config.maxJsonBodySize }));
 
@@ -53,6 +62,18 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get("/api/ready", (req, res) => {
+  const databaseReady = mongoose.connection.readyState === 1;
+  return res.status(databaseReady ? 200 : 503).json({
+    success: databaseReady,
+    status: databaseReady ? "ready" : "not_ready",
+    checks: {
+      config: "valid",
+      database: databaseReady ? "connected" : "disconnected",
+    },
+  });
+});
+
 app.use("/api", authRouter);
 app.use("/api/user", usersRouter);
 app.use("/api/category", categoryRouter);
@@ -60,7 +81,18 @@ app.use("/api/product", productRouter);
 app.use("/api", brainTreeRouter);
 app.use("/api/cart", cartRouter);
 app.use("/api/order", orderRouter);
+app.use("/api", customerAccountsRouter);
+app.use("/api", commerceRouter);
+app.use("/api", paymentsRouter);
 app.use("/api/customize", customizeRouter);
+
+app.use("/api", (req, res) => {
+  return res.status(404).json({
+    success: false,
+    code: "NOT_FOUND",
+    error: "API route not found",
+  });
+});
 
 app.use((err, req, res, next) => {
   const status = err.status || err.statusCode || 500;

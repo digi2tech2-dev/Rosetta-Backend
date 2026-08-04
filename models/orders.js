@@ -9,6 +9,8 @@ const orderItemSnapshotSchema = new mongoose.Schema(
     unitPrice: { type: Number, required: true },
     quantity: { type: Number, required: true },
     lineTotal: { type: Number, required: true },
+    selectedColor: { type: String, default: null },
+    selectedSize: { type: String, default: null },
   },
   { _id: false }
 );
@@ -17,6 +19,8 @@ const shippingAddressSchema = new mongoose.Schema(
   {
     fullName: String,
     phone: String,
+    alternatePhone: String,
+    governorate: String,
     city: String,
     area: String,
     street: String,
@@ -24,6 +28,70 @@ const shippingAddressSchema = new mongoose.Schema(
     apartment: String,
     postalCode: String,
     notes: String,
+  },
+  { _id: false }
+);
+
+const guestCustomerSchema = new mongoose.Schema(
+  {
+    fullName: String,
+    email: String,
+    phone: String,
+    normalizedEmail: { type: String, select: false },
+    normalizedPhone: { type: String, select: false },
+  },
+  { _id: false }
+);
+
+const couponSnapshotSchema = new mongoose.Schema(
+  {
+    couponId: String,
+    code: String,
+    type: String,
+    value: Number,
+    calculatedDiscount: Number,
+  },
+  { _id: false }
+);
+
+const firstOrderPromotionSnapshotSchema = new mongoose.Schema(
+  {
+    type: String,
+    value: Number,
+    calculatedDiscount: Number,
+  },
+  { _id: false }
+);
+
+const shippingSnapshotSchema = new mongoose.Schema(
+  {
+    ruleId: String,
+    name: String,
+    governorate: String,
+    city: String,
+    originalFee: Number,
+    chargedFee: Number,
+    freeShippingApplied: Boolean,
+  },
+  { _id: false }
+);
+
+const pricingSnapshotSchema = new mongoose.Schema(
+  {
+    currency: String,
+    merchandiseSubtotal: Number,
+    discountTotal: Number,
+    shippingFee: Number,
+    grandTotal: Number,
+    discountSource: {
+      type: String,
+      enum: ["none", "coupon", "first_order"],
+      default: "none",
+    },
+    couponSnapshot: { type: couponSnapshotSchema, default: null },
+    firstOrderPromotionSnapshot: { type: firstOrderPromotionSnapshotSchema, default: null },
+    shippingSnapshot: { type: shippingSnapshotSchema, default: null },
+    pricingVersion: String,
   },
   { _id: false }
 );
@@ -50,7 +118,31 @@ const orderSchema = new mongoose.Schema(
     user: {
       type: ObjectId,
       ref: "users",
-      required: true,
+      required: function () {
+        return this.customerType !== "guest";
+      },
+    },
+    customerType: {
+      type: String,
+      enum: ["registered", "guest"],
+      default: "registered",
+      index: true,
+    },
+    guestCustomer: {
+      type: guestCustomerSchema,
+      default: null,
+    },
+    guestTrackingTokenHash: {
+      type: String,
+      select: false,
+      default: null,
+    },
+    guestTrackingTokenCreatedAt: Date,
+    orderNumber: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
     },
     amount: {
       type: Number,
@@ -81,6 +173,12 @@ const orderSchema = new mongoose.Schema(
     },
     subtotal: Number,
     shippingFee: Number,
+    discountTotal: Number,
+    discountSource: {
+      type: String,
+      enum: ["none", "coupon", "first_order"],
+      default: "none",
+    },
     total: Number,
     currency: {
       type: String,
@@ -89,18 +187,31 @@ const orderSchema = new mongoose.Schema(
     shippingAddress: shippingAddressSchema,
     paymentMethod: {
       type: String,
-      enum: ["cash_on_delivery", "legacy_braintree"],
+      enum: ["cash_on_delivery", "legacy_braintree", "paymob_card", "paymob_wallet"],
     },
     paymentStatus: {
       type: String,
-      enum: ["unpaid", "paid", "refunded", "failed"],
+      enum: ["unpaid", "pending", "paid", "refunded", "failed", "expired", "cancelled", "manual_review"],
     },
+    paymentProvider: {
+      type: String,
+      enum: ["paymob", null],
+      default: null,
+    },
+    paymentAttempt: { type: ObjectId, ref: "paymentAttempts", default: null },
+    providerTransactionId: String,
+    paymentExpiresAt: Date,
     orderStatus: {
       type: String,
       enum: ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"],
     },
     customerNote: String,
+    coupon: { type: ObjectId, ref: "coupons", default: null },
+    couponCode: String,
+    couponRedemption: { type: ObjectId, ref: "couponRedemptions", default: null },
+    pricingSnapshot: pricingSnapshotSchema,
     idempotencyKey: String,
+    idempotencyScope: String,
     idempotencyPayloadHash: String,
     inventoryApplied: {
       type: Boolean,
@@ -122,7 +233,21 @@ orderSchema.index(
   { user: 1, idempotencyKey: 1 },
   {
     unique: true,
-    partialFilterExpression: { idempotencyKey: { $type: "string" } },
+    partialFilterExpression: {
+      user: { $type: "objectId" },
+      idempotencyKey: { $type: "string" },
+    },
+  }
+);
+orderSchema.index(
+  { idempotencyScope: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      customerType: "guest",
+      idempotencyScope: { $type: "string" },
+      idempotencyKey: { $type: "string" },
+    },
   }
 );
 
