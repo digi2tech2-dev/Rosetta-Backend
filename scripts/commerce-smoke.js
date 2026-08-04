@@ -235,7 +235,7 @@ async function main() {
 
     await test("Client-supplied price is ignored", async () => {
       const res = await request("/api/cart", { token: seeded.customerToken });
-      assert(res.body.cart.items[0].unitPrice === 80, "server offer price was not authoritative");
+      assert(res.body.cart.items[0].unitPrice === 100, "server pPrice was not authoritative");
     });
 
     await test("Invalid quantity is rejected", async () => {
@@ -273,8 +273,8 @@ async function main() {
         token: seeded.customerToken,
         body: { quantity: 2 },
       });
-      assert(res.body.cart.items[0].unitPrice === 90, "updated server price not used");
-      assert(res.body.cart.summary.subtotal === 180, "subtotal did not recompute");
+      assert(res.body.cart.items[0].unitPrice === 120, "updated server price not used");
+      assert(res.body.cart.summary.subtotal === 240, "subtotal did not recompute");
     });
 
     await test("Cart item removal works", async () => {
@@ -293,7 +293,7 @@ async function main() {
         body: { items: [{ productId: seeded.productA._id, quantity: 1, price: 1 }] },
       });
       assert(res.status === 200, "sync failed");
-      assert(res.body.cart.items[0].unitPrice === 90, "sync trusted client price");
+      assert(res.body.cart.items[0].unitPrice === 120, "sync trusted client price");
     });
 
     await test("Guest-cart sync merges duplicates", async () => {
@@ -367,7 +367,7 @@ async function main() {
       });
       assert(res.status === 201, "COD creation failed");
       createdOrderId = res.body.order.id;
-      assert(res.body.order.total === 90, "server total not authoritative");
+      assert(res.body.order.total === 120, "server total not authoritative");
       assert(String(res.body.order.user) === String(seeded.customer._id), "order owner came from client");
       assert(res.body.order.orderStatus === "pending", "order status trusted client");
       assert(res.body.order.paymentStatus === "unpaid", "payment status trusted client");

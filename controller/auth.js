@@ -216,9 +216,6 @@ class Auth {
 
       const linkedUser = await userModel.findOne({ "authProviders.google.sub": identity.sub });
       if (linkedUser) {
-        if (linkedUser.userRole !== 0) {
-          return genericGoogleFailure(res);
-        }
         if (isBlocked(linkedUser)) {
           return googleAuthError(res, 403, "ACCOUNT_BLOCKED", "Account is blocked");
         }

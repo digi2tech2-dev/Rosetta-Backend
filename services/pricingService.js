@@ -48,19 +48,7 @@ function money(value) {
 }
 
 function getEffectiveProductPriceCents(product) {
-  const base = toCents(product.pPrice);
-  const offerRaw = product.pOffer;
-  const hasOffer =
-    offerRaw !== undefined &&
-    offerRaw !== null &&
-    String(offerRaw).trim() !== "" &&
-    Number(offerRaw) > 0;
-  if (!hasOffer) {
-    return base;
-  }
-
-  const offer = toCents(offerRaw);
-  return offer > 0 && offer < base ? offer : base;
+  return toCents(product.pPrice);
 }
 
 function getEffectiveProductPrice(product) {

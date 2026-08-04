@@ -287,11 +287,11 @@ async function main() {
       });
       assert(add.status === 201, "add cart failed");
       assert(quote.status === 200, "quote failed");
-      assert(quote.body.quote.items[0].unitPrice === 80, "server product offer price not used");
-      assert(quote.body.quote.summary.merchandiseSubtotal === 80, "subtotal trusted client");
-      assert(quote.body.quote.summary.discountTotal === 8, "first order promo not server-calculated");
+      assert(quote.body.quote.items[0].unitPrice === 100, "server pPrice not used");
+      assert(quote.body.quote.summary.merchandiseSubtotal === 100, "subtotal trusted client");
+      assert(quote.body.quote.summary.discountTotal === 10, "first order promo not server-calculated");
       assert(quote.body.quote.summary.shippingFee === 12, "city shipping rule not used");
-      assert(quote.body.quote.summary.grandTotal === 84, "grand total mismatch");
+      assert(quote.body.quote.summary.grandTotal === 102, "grand total mismatch");
     });
 
     await test("Quote does not consume coupon usage", async () => {
@@ -317,7 +317,7 @@ async function main() {
       const coupon = await couponModel.findOne({ code: `${TEST_PREFIX}FIXED` });
       const redemptions = await couponRedemptionModel.countDocuments({ coupon: coupon._id, status: "applied" });
       assert(created.status === 201, `COD with coupon failed: ${JSON.stringify(created.body)}`);
-      assert(created.body.order.total === 77, "order total not recalculated");
+      assert(created.body.order.total === 97, "order total not recalculated");
       assert(created.body.order.pricingSnapshot.couponSnapshot.code === `${TEST_PREFIX}FIXED`.toUpperCase(), "coupon snapshot missing");
       assert(coupon.usageCount === 1, "coupon usage not consumed");
       assert(redemptions === 1, "redemption missing");
@@ -393,7 +393,7 @@ async function main() {
       });
       assert(res.status === 200, "percentage coupon quote failed");
       assert(res.body.quote.summary.discountTotal === 10, "percentage max cap failed");
-      assert(res.body.quote.summary.grandTotal === 82, "percentage total mismatch");
+      assert(res.body.quote.summary.grandTotal === 102, "percentage total mismatch");
     });
 
     await test("Global usage final slot is atomic enough for concurrent attempts", async () => {

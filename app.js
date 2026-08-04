@@ -49,8 +49,15 @@ app.use(helmet());
 app.use(morgan(config.nodeEnv === "test" ? "tiny" : "dev"));
 app.use(cookieParser());
 app.use(cors(corsOptions));
+app.use(
+  config.uploadPublicPath,
+  (req, res, next) => {
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  },
+  express.static(config.uploadRoot)
+);
 app.use(express.static("public"));
-app.use(config.uploadPublicPath, express.static(config.uploadRoot));
 app.use(express.urlencoded({ extended: false, limit: config.maxJsonBodySize }));
 app.use(express.json({ limit: config.maxJsonBodySize }));
 

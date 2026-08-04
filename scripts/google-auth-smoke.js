@@ -332,6 +332,26 @@ async function main() {
       assert(adminEmail.status === 401 && adminEmail.body.code === "AUTHENTICATION_FAILED", "admin email should fail generically");
       const adminAfter = await userModel.findById(admin._id);
       assert(!adminAfter.authProviders.google.sub, "admin should not be linked");
+      await userModel.findByIdAndUpdate(admin._id, {
+        "authProviders.google.enabled": true,
+        "authProviders.google.sub": `${TEST_PREFIX}sub-linked-admin`,
+        "authProviders.google.linkedAt": new Date(),
+      });
+      const linkedAdmin = await request("/api/auth/google", {
+        method: "POST",
+        body: { credential: fakeCredential({ sub: `${TEST_PREFIX}sub-linked-admin`, email: `${TEST_PREFIX}changed-admin@example.com` }) },
+      });
+      assert(linkedAdmin.status === 200, "linked admin Google sub should authenticate");
+      assert(linkedAdmin.body.user.userRole === 1, "linked admin role should be preserved");
+      const linkedAdminJwt = jwt.verify(linkedAdmin.body.token, config.jwtSecret);
+      assert(linkedAdminJwt.role === 1, "linked admin JWT role should match database userRole");
+      await userModel.findByIdAndUpdate(admin._id, { status: "blocked" });
+      const blockedLinkedAdmin = await request("/api/auth/google", {
+        method: "POST",
+        body: { credential: fakeCredential({ sub: `${TEST_PREFIX}sub-linked-admin`, email: admin.email }) },
+      });
+      assert(blockedLinkedAdmin.status === 403 && blockedLinkedAdmin.body.code === "ACCOUNT_BLOCKED", "blocked linked admin should be rejected");
+      await userModel.findByIdAndUpdate(admin._id, { status: "active" });
       const injected = await request("/api/auth/google", {
         method: "POST",
         body: {

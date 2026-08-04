@@ -19,6 +19,7 @@
     "google:smoke": "node scripts/google-auth-smoke.js",
     "pricing:smoke": "node scripts/pricing-shipping-smoke.js",
     "paymob:smoke": "node scripts/paymob-payment-smoke.js",
+    "paymob:validation": "node scripts/paymob-validation-smoke.js",
     "guest:smoke": "node scripts/guest-checkout-smoke.js",
     "payment:expire": "node scripts/payment-expiry-sweep.js",
     "database:readiness": "node scripts/database-readiness.js",

@@ -184,7 +184,7 @@ async function main() {
     assert(failed, "out of stock did not fail");
   });
   await test("Server amount and currency are used", async () => {
-    assert(card.attempt.amountMinor === 8000, "amount was not minor-unit server price");
+    assert(card.attempt.amountMinor === 10000, "amount was not minor-unit server price");
     assert(card.attempt.currency === "EGP", "currency mismatch");
   });
   await test("No card or wallet credentials are persisted", async () => {

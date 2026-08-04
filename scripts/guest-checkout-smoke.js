@@ -300,8 +300,8 @@ async function main() {
         body: { shippingAddress: address, cartItems: cart(seeded.product) },
       });
       assert(res.status === 200 && res.body.success, "guest quote failed");
-      assert(res.body.quote.items[0].unitPrice === 80, "submitted client price was trusted");
-      assert(res.body.quote.summary.grandTotal === 92, "server total mismatch");
+      assert(res.body.quote.items[0].unitPrice === 100, "submitted client price was trusted");
+      assert(res.body.quote.summary.grandTotal === 112, "server total mismatch");
       assert(res.body.quote.firstOrderEligible === false, "guest first-order eligibility leaked true");
     });
 
