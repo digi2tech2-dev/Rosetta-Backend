@@ -3,7 +3,7 @@ const router = express.Router();
 const cartController = require("../controller/cart");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
-router.use(requireAuth, requireRole("customer"));
+router.use(requireAuth, requireRole("customer", "admin"));
 
 router.get("/", cartController.getCart);
 router.post("/items", cartController.addItem);

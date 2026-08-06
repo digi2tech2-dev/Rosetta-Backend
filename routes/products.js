@@ -7,6 +7,7 @@ const { imageUpload, uploadErrorHandler } = require("../utils/upload");
 const upload = imageUpload("products", 10);
 
 router.get("/all-product", optionalAuth, productController.getAllProduct);
+router.get("/recommended", productController.getRecommendedProducts);
 router.post("/product-by-category", productController.getProductByCategory);
 router.post("/product-by-price", productController.getProductByPrice);
 router.post("/wish-product", productController.getWishProduct);
@@ -33,6 +34,12 @@ router.post(
   requireAuth,
   requireRole("admin"),
   productController.getDeleteProduct
+);
+router.post(
+  "/recommend-product",
+  requireAuth,
+  requireRole("admin"),
+  productController.postToggleRecommended
 );
 router.post("/single-product", optionalAuth, productController.getSingleProduct);
 

@@ -41,6 +41,8 @@ function serializeProduct(product, options = {}) {
     pColors: doc.pColors || [],
     pSizes: doc.pSizes || [],
     pColorImages: doc.pColorImages || {},
+    pCategoryOrder: doc.pCategoryOrder === undefined ? null : doc.pCategoryOrder,
+    pRecommended: Boolean(doc.pRecommended),
     inventoryMode: doc.inventoryMode || "simple",
     relatedProducts: (doc.relatedProducts || []).map((product) => summarizeProduct(product, { admin: includeAdmin })).filter(Boolean),
     similarProducts: (doc.similarProducts || []).map((product) => summarizeProduct(product, { admin: includeAdmin })).filter(Boolean),

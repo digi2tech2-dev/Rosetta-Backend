@@ -54,9 +54,11 @@ class CartController {
 
   async removeItem(req, res) {
     try {
+      const selectedColor = req.query.selectedColor ?? req.body.selectedColor;
+      const selectedSize = req.query.selectedSize ?? req.body.selectedSize;
       const cart = await cartService.removeItem(req.auth.userId, req.params.productId, {
-        selectedColor: req.query.selectedColor,
-        selectedSize: req.query.selectedSize,
+        selectedColor,
+        selectedSize,
       });
       return res.json({ success: true, cart });
     } catch (err) {

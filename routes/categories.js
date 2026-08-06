@@ -19,6 +19,8 @@ router.post(
   "/edit-category",
   requireAuth,
   requireRole("admin"),
+  upload.single("cImage"),
+  uploadErrorHandler,
   categoryController.postEditCategory
 );
 router.post(

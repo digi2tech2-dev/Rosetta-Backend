@@ -1,10 +1,16 @@
 const productModel = require("../models/products");
+const mongoose = require("mongoose");
 const fs = require("fs");
 const path = require("path");
 const { isValidObjectId } = require("../utils/validation");
 const { uploadFolderPath } = require("../utils/uploadPaths");
 const { normalizeProductPayload } = require("../services/productNormalizationService");
 const { serializeProduct } = require("../services/productSerializer");
+
+const MAX_PAGE_LIMIT = 100;
+const DEFAULT_CATALOG_LIMIT = 100;
+const DEFAULT_CATEGORY_LIMIT = 16;
+const MAX_SORT_ORDER = Number.MAX_SAFE_INTEGER;
 
 class Product {
   static deleteImages(images, mode) {
@@ -55,6 +61,177 @@ class Product {
     } catch {
       return {};
     }
+  }
+
+  static parsePagination(query, defaultLimit = DEFAULT_CATALOG_LIMIT) {
+    const hasPage = query.page !== undefined;
+    const hasLimit = query.limit !== undefined;
+    const rawPage = hasPage ? String(query.page).trim() : "1";
+    const rawLimit = hasLimit ? String(query.limit).trim() : String(defaultLimit);
+    if (!/^\d+$/.test(rawPage) || !/^\d+$/.test(rawLimit)) {
+      throw Object.assign(new Error("page and limit must be positive whole numbers"), {
+        status: 400,
+        code: "VALIDATION_ERROR",
+      });
+    }
+    const page = Number(rawPage);
+    const limit = Number(rawLimit);
+    if (!Number.isSafeInteger(page) || !Number.isSafeInteger(limit) || page < 1 || limit < 1 || limit > MAX_PAGE_LIMIT) {
+      throw Object.assign(new Error(`page must be >= 1 and limit must be from 1 to ${MAX_PAGE_LIMIT}`), {
+        status: 400,
+        code: "VALIDATION_ERROR",
+      });
+    }
+    return { page, limit };
+  }
+
+  static paginationMeta(page, limit, totalItems) {
+    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+    const currentPage = totalItems > 0
+      ? Math.min(Math.max(page, 1), totalPages)
+      : 1;
+    return {
+      currentPage,
+      pageSize: limit,
+      totalItems,
+      totalPages,
+      hasNextPage: currentPage < totalPages,
+      hasPreviousPage: currentPage > 1,
+      page: currentPage,
+      limit,
+      total: totalItems,
+    };
+  }
+
+  static categoryOrderValue(product) {
+    const rawOrder = Number(product && (product.pCategoryOrder ?? product.categoryOrder ?? product.displayOrder));
+    return Number.isFinite(rawOrder) && rawOrder >= 1 ? rawOrder : MAX_SORT_ORDER;
+  }
+
+  static compareCategoryProducts(left, right) {
+    const leftOrder = Product.categoryOrderValue(left);
+    const rightOrder = Product.categoryOrderValue(right);
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    const leftCreated = new Date(left && left.createdAt ? left.createdAt : 0).getTime();
+    const rightCreated = new Date(right && right.createdAt ? right.createdAt : 0).getTime();
+    if (leftCreated !== rightCreated) return leftCreated - rightCreated;
+    return String(left && left._id ? left._id : "").localeCompare(String(right && right._id ? right._id : ""));
+  }
+
+  static categoryOrderedSort() {
+    return {
+      __categoryOrder: 1,
+      createdAt: 1,
+      _id: 1,
+    };
+  }
+
+  static categoryOrderStages() {
+    return [
+      {
+        $addFields: {
+          __categoryOrder: {
+            $cond: [
+              { $gt: ["$pCategoryOrder", 0] },
+              "$pCategoryOrder",
+              MAX_SORT_ORDER,
+            ],
+          },
+        },
+      },
+    ];
+  }
+
+  static async queryProducts({ filter, page, limit, sort, categoryOrder = false }) {
+    const stages = [{ $match: filter }];
+    if (categoryOrder) stages.push(...Product.categoryOrderStages());
+    stages.push({ $sort: categoryOrder ? Product.categoryOrderedSort() : sort });
+    stages.push({
+      $facet: {
+        rows: [
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          {
+            $lookup: {
+              from: "categories",
+              localField: "pCategory",
+              foreignField: "_id",
+              as: "pCategory",
+            },
+          },
+          { $unwind: { path: "$pCategory", preserveNullAndEmptyArrays: true } },
+          { $project: { __categoryOrder: 0 } },
+        ],
+        count: [{ $count: "total" }],
+      },
+    });
+    const [result] = await productModel.aggregate(stages);
+    const rows = result ? result.rows : [];
+    const total = result && result.count[0] ? result.count[0].total : 0;
+    return { rows, total };
+  }
+
+  static parseRetainedImages(value, currentImages) {
+    if (value === undefined || value === null) {
+      return { retained: currentImages, explicit: false, legacyCommaList: false };
+    }
+    const raw = String(value).trim();
+    if (!raw) return { retained: [], explicit: true, legacyCommaList: false };
+    let parsed;
+    let legacyCommaList = false;
+    if (raw.startsWith("[") || raw.startsWith("{")) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw Object.assign(new Error("pImages contains malformed JSON"), {
+          status: 400,
+          code: "VALIDATION_ERROR",
+        });
+      }
+    } else {
+      parsed = raw.split(",");
+      legacyCommaList = true;
+    }
+    if (!Array.isArray(parsed)) {
+      throw Object.assign(new Error("pImages must be an array"), { status: 400, code: "VALIDATION_ERROR" });
+    }
+    const currentSet = new Set(currentImages.map((image) => path.basename(String(image || ""))));
+    const retained = [];
+    for (const item of parsed) {
+      const image = path.basename(String(item || "").replace(/\\/g, "/"));
+      if (!image) continue;
+      if (!currentSet.has(image)) {
+        throw Object.assign(new Error("pImages contains an image not owned by this product"), {
+          status: 400,
+          code: "VALIDATION_ERROR",
+        });
+      }
+      if (!retained.includes(image)) retained.push(image);
+    }
+    return { retained, explicit: true, legacyCommaList };
+  }
+
+  static productImageReferences(product) {
+    const references = new Set((product && product.pImages || []).map((image) => path.basename(String(image || ""))).filter(Boolean));
+    const colorImages = product && product.pColorImages && typeof product.pColorImages === "object" ? product.pColorImages : {};
+    Object.values(colorImages).forEach((value) => {
+      const fileName = value && typeof value === "object" ? value.fileName : value;
+      const safeFileName = path.basename(String(fileName || ""));
+      if (safeFileName) references.add(safeFileName);
+    });
+    return references;
+  }
+
+  static async deleteUnreferencedProductImages(imageNames, currentProductId) {
+    const uniqueNames = [...new Set((imageNames || []).map((image) => path.basename(String(image || ""))).filter(Boolean))];
+    if (!uniqueNames.length) return;
+    const otherProducts = await productModel.find({ _id: { $ne: currentProductId } }).select("pImages pColorImages");
+    const referencedElsewhere = new Set();
+    otherProducts.forEach((product) => {
+      Product.productImageReferences(product).forEach((image) => referencedElsewhere.add(image));
+    });
+    const safeToDelete = uniqueNames.filter((image) => !referencedElsewhere.has(image));
+    Product.deleteImages(safeToDelete, "string");
   }
 
   static inferMainImageCount(body, files) {
@@ -127,12 +304,12 @@ class Product {
 
   static catalogSort(sort) {
     const sorts = {
-      price_asc: { pPrice: 1, _id: -1 },
-      price_desc: { pPrice: -1, _id: -1 },
+      price_asc: { pPrice: 1, createdAt: -1, _id: -1 },
+      price_desc: { pPrice: -1, createdAt: -1, _id: -1 },
       newest: { createdAt: -1, _id: -1 },
       name_asc: { pName: 1, _id: -1 },
     };
-    return sorts[sort] || { _id: -1 };
+    return sorts[sort] || { createdAt: -1, _id: -1 };
   }
 
   static async fillRecommendations(serialized, sourceProduct) {
@@ -214,19 +391,44 @@ class Product {
   async getAllProduct(req, res, next) {
     try {
       const isAdmin = Product.isAdminRequest(req);
-      const page = Math.max(Number.parseInt(req.query.page || "1", 10) || 1, 1);
-      const limit = Math.min(Math.max(Number.parseInt(req.query.limit || "100", 10) || 100, 1), 100);
       const filter = Product.buildCatalogFilter(req.query, isAdmin);
-      const Products = await productModel
-        .find(filter)
-        .populate("pCategory", "_id cName")
-        .sort(Product.catalogSort(req.query.sort))
-        .skip((page - 1) * limit)
-        .limit(limit);
-      const total = await productModel.countDocuments(filter);
+      const useCategoryOrder = Boolean(req.query.category) && !req.query.sort;
+      const hasPaginationQuery = req.query.page !== undefined || req.query.limit !== undefined;
+      if (!hasPaginationQuery) {
+        const rows = await Product.relationPopulate(productModel.find(filter)).exec();
+        const orderedRows = useCategoryOrder
+          ? rows.sort(Product.compareCategoryProducts)
+          : rows.sort((left, right) => {
+            const sort = Product.catalogSort(req.query.sort);
+            const [field, direction] = Object.entries(sort)[0] || ["createdAt", -1];
+            const leftValue = left ? left[field] : undefined;
+            const rightValue = right ? right[field] : undefined;
+            if (leftValue === rightValue) {
+              const leftCreated = new Date(left && left.createdAt ? left.createdAt : 0).getTime();
+              const rightCreated = new Date(right && right.createdAt ? right.createdAt : 0).getTime();
+              if (leftCreated !== rightCreated) return leftCreated - rightCreated;
+              return String(left && left._id ? left._id : "").localeCompare(String(right && right._id ? right._id : ""));
+            }
+            if (leftValue > rightValue) return direction;
+            if (leftValue < rightValue) return -direction;
+            return 0;
+          });
+        return res.json({
+          Products: orderedRows.map((product) => serializeProduct(product, { admin: isAdmin })),
+          pagination: Product.paginationMeta(1, orderedRows.length || 1, orderedRows.length),
+        });
+      }
+      const { page, limit } = Product.parsePagination(req.query, DEFAULT_CATALOG_LIMIT);
+      const { rows, total } = await Product.queryProducts({
+        filter,
+        page,
+        limit,
+        sort: Product.catalogSort(req.query.sort),
+        categoryOrder: useCategoryOrder,
+      });
       return res.json({
-        Products: Products.map((product) => serializeProduct(product, { admin: isAdmin })),
-        pagination: { page, limit, total },
+        Products: rows.map((product) => serializeProduct(product, { admin: isAdmin })),
+        pagination: Product.paginationMeta(page, limit, total),
       });
     } catch (err) {
       return Product.sendProductError(res, err);
@@ -234,7 +436,7 @@ class Product {
   }
 
   async postAddProduct(req, res, next) {
-    const { pName, pDescription, pPrice, pQuantity, pCategory, pOffer, pStatus } =
+    const { pName, pDescription, pPrice, pQuantity, pCategory, pOffer, pStatus, pCategoryOrder } =
       req.body;
     const images = req.files || [];
 
@@ -277,7 +479,7 @@ class Product {
       });
       await Product.validateRelations(extraData);
       await Product.validateUniqueBarcode(extraData.pBarcode);
-      await productModel.create({
+      const createdProduct = await productModel.create({
         pImages: allImages,
         pName,
         pDescription,
@@ -286,9 +488,11 @@ class Product {
         pCategory,
         pOffer,
         pStatus,
+        pCategoryOrder: extraData.pCategoryOrder,
         ...extraData,
       });
-      return res.json({ success: "Product created successfully" });
+      const populated = await productModel.findById(createdProduct._id).populate("pCategory", "_id cName");
+      return res.json({ success: "Product created successfully", Product: serializeProduct(populated, { admin: true }) });
     } catch (err) {
       Product.deleteImages(images, "file");
       return Product.sendProductError(res, err);
@@ -305,6 +509,7 @@ class Product {
       pCategory,
       pOffer,
       pStatus,
+      pCategoryOrder,
       pImages,
     } = req.body;
     const editImages = req.files || [];
@@ -342,7 +547,15 @@ class Product {
     }
 
     let extraData;
+    let currentProduct;
+    let retainedInfo;
     try {
+      currentProduct = await productModel.findById(pId);
+      if (!currentProduct) {
+        Product.deleteImages(editImages, "file");
+        return res.status(404).json({ error: "Product not found" });
+      }
+      retainedInfo = Product.parseRetainedImages(pImages, currentProduct.pImages || []);
       extraData = normalizeProductPayload(req.body, {
         currentProductId: pId,
         files: editImages,
@@ -363,24 +576,38 @@ class Product {
       pCategory,
       pOffer,
       pStatus,
+      pCategoryOrder: extraData.pCategoryOrder,
       ...extraData,
       updatedAt: Date.now(),
     };
     const colorUploadIndexes = Product.colorUploadIndexes(req.body);
-    if (editImages.length >= 2 && colorUploadIndexes.size === 0) {
-      editData.pImages = editImages.map((img) => img.filename);
+    const mainUploadedImages = editImages
+      .map((img, index) => ({ img, index }))
+      .filter(({ index }) => !colorUploadIndexes.has(index))
+      .map(({ img }) => img.filename);
+    if (retainedInfo.explicit && retainedInfo.legacyCommaList && mainUploadedImages.length >= 2 && colorUploadIndexes.size === 0) {
+      editData.pImages = mainUploadedImages;
+    } else if (retainedInfo.explicit || mainUploadedImages.length) {
+      editData.pImages = [...retainedInfo.retained, ...mainUploadedImages];
+    }
+    if (editData.pImages && editData.pImages.length < 1) {
+      Product.deleteImages(editImages, "file");
+      return res.status(400).json({ error: "Product must have at least one image" });
     }
 
     try {
-      const editProduct = await productModel.findByIdAndUpdate(pId, editData);
+      const editProduct = await productModel
+        .findByIdAndUpdate(pId, editData, { new: true, runValidators: true })
+        .populate("pCategory", "_id cName");
       if (!editProduct) {
         Product.deleteImages(editImages, "file");
         return res.status(404).json({ error: "Product not found" });
       }
-      if (editData.pImages && pImages) {
-        Product.deleteImages(String(pImages).split(","), "string");
-      }
-      return res.json({ success: "Product edit successfully" });
+      const previousReferences = Product.productImageReferences(currentProduct);
+      const currentReferences = Product.productImageReferences(editProduct);
+      const removedImages = [...previousReferences].filter((image) => !currentReferences.has(image));
+      await Product.deleteUnreferencedProductImages(removedImages, editProduct._id);
+      return res.json({ success: "Product edit successfully", Product: serializeProduct(editProduct, { admin: true }) });
     } catch (err) {
       Product.deleteImages(editImages, "file");
       return Product.sendProductError(res, err);
@@ -432,16 +659,68 @@ class Product {
   async getProductByCategory(req, res, next) {
     try {
       const { catId } = req.body;
+      const { page, limit } = Product.parsePagination({ ...req.query, ...req.body }, DEFAULT_CATEGORY_LIMIT);
       if (!isValidObjectId(catId)) {
         return res.status(400).json({ error: "catId must be a valid id" });
       }
 
-      const Products = await productModel
-        .find({ pCategory: catId, pStatus: "Active" })
-        .populate("pCategory", "cName");
-      return res.json({ Products: Products.map((product) => serializeProduct(product)) });
+      const { rows, total } = await Product.queryProducts({
+        filter: { pCategory: mongoose.Types.ObjectId(catId), pStatus: "Active" },
+        page,
+        limit,
+        categoryOrder: true,
+      });
+      return res.json({
+        Products: rows.map((product) => serializeProduct(product)),
+        pagination: Product.paginationMeta(page, limit, total),
+      });
     } catch (err) {
       return next(err);
+    }
+  }
+
+  async getRecommendedProducts(req, res, next) {
+    try {
+      const { page, limit } = Product.parsePagination(req.query, DEFAULT_CATEGORY_LIMIT);
+      const filter = { pRecommended: true, pStatus: "Active", pQuantity: { $gt: 0 } };
+      const { rows, total } = await Product.queryProducts({
+        filter,
+        page,
+        limit,
+        sort: { createdAt: -1, _id: -1 },
+      });
+      return res.json({
+        Products: rows.map((product) => serializeProduct(product)),
+        pagination: Product.paginationMeta(page, limit, total),
+      });
+    } catch (err) {
+      return Product.sendProductError(res, err);
+    }
+  }
+
+  async postToggleRecommended(req, res, next) {
+    try {
+      const { pId } = req.body;
+      if (!isValidObjectId(pId)) {
+        return res.status(400).json({ success: false, code: "VALIDATION_ERROR", error: "pId must be a valid id" });
+      }
+      const update = {};
+      if (req.body.recommended === undefined) {
+        const current = await productModel.findById(pId).select("pRecommended");
+        if (!current) return res.status(404).json({ success: false, code: "NOT_FOUND", error: "Product not found" });
+        update.pRecommended = !current.pRecommended;
+      } else {
+        update.pRecommended = req.body.recommended === true || req.body.recommended === "true";
+      }
+      const product = await productModel
+        .findByIdAndUpdate(pId, update, { new: true, runValidators: true })
+        .populate("pCategory", "_id cName");
+      if (!product) {
+        return res.status(404).json({ success: false, code: "NOT_FOUND", error: "Product not found" });
+      }
+      return res.json({ success: true, Product: serializeProduct(product, { admin: true }) });
+    } catch (err) {
+      return Product.sendProductError(res, err);
     }
   }
 

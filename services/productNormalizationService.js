@@ -36,6 +36,19 @@ function normalizeOptionalMoney(value, field = "pCost") {
   return Number(amount.toFixed(2));
 }
 
+function normalizeOptionalPositiveInteger(value, field) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) {
+    throw httpError(400, "VALIDATION_ERROR", `${field} must be a positive whole number`);
+  }
+  const number = Number(text);
+  if (!Number.isSafeInteger(number) || number < 1) {
+    throw httpError(400, "VALIDATION_ERROR", `${field} must be a positive whole number`);
+  }
+  return number;
+}
+
 function normalizeBarcode(value) {
   const barcode = normalizeOptionalString(value, "pBarcode", 80);
   return barcode || null;
@@ -202,6 +215,7 @@ function normalizeProductPayload(body, options = {}) {
 
   return {
     pCost: normalizeOptionalMoney(body.pCost, "pCost"),
+    pCategoryOrder: normalizeOptionalPositiveInteger(body.pCategoryOrder, "pCategoryOrder"),
     pBarcode: normalizeBarcode(body.pBarcode),
     pBrand: normalizeOptionalString(body.pBrand, "pBrand", 120),
     pVideo: normalizeVideoUrl(body.pVideo),
@@ -222,6 +236,7 @@ module.exports = {
   normalizeColorImageMap,
   normalizeObjectIdArray,
   normalizeOptionalMoney,
+  normalizeOptionalPositiveInteger,
   normalizeOptionalString,
   normalizeProductPayload,
   normalizeStringArray,

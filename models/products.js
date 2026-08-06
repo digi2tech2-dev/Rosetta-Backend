@@ -73,6 +73,15 @@ const productSchema = new mongoose.Schema(
       type: ObjectId,
       ref: "products",
     }],
+    pCategoryOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
+    pRecommended: {
+      type: Boolean,
+      default: false,
+    },
     pCategory: {
       type: ObjectId,
       ref: "categories",

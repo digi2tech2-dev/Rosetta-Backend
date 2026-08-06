@@ -1,7 +1,14 @@
 const { spawn } = require("child_process");
+const fs = require("fs");
 const mongoose = require("mongoose");
+const os = require("os");
+const path = require("path");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+
+const TEST_UPLOAD_ROOT = path.join(os.tmpdir(), "rosetta-product-catalog-smoke-uploads");
+process.env.UPLOAD_ROOT = process.env.UPLOAD_ROOT || TEST_UPLOAD_ROOT;
+
 const { assertLocalMongoDatabase } = require("../utils/localDatabase");
 const { config } = require("../config/appConfig");
 const userModel = require("../models/users");
@@ -11,7 +18,10 @@ const cartModel = require("../models/carts");
 const orderModel = require("../models/orders");
 const cartService = require("../services/cartService");
 const orderService = require("../services/orderService");
-const { normalizeProductPayload } = require("../services/productNormalizationService");
+const productController = require("../controller/products");
+const categoryController = require("../controller/categories");
+const { uploadFolderPath } = require("../utils/uploadPaths");
+const { normalizeOptionalPositiveInteger, normalizeProductPayload } = require("../services/productNormalizationService");
 const { serializeProduct } = require("../services/productSerializer");
 const { validateProductOptions } = require("../services/productOptionService");
 
@@ -42,6 +52,50 @@ async function request(path, options = {}) {
     body = { raw: text };
   }
   return { status: response.status, body };
+}
+
+async function invokeController(handler, req = {}) {
+  const res = {
+    statusCode: 200,
+    body: undefined,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return this;
+    },
+  };
+  let nextError;
+  await handler(req, res, (err) => {
+    nextError = err;
+  });
+  if (nextError) throw nextError;
+  return { status: res.statusCode, body: res.body };
+}
+
+function ensureUploadFolders() {
+  fs.mkdirSync(uploadFolderPath("products"), { recursive: true });
+  fs.mkdirSync(uploadFolderPath("categories"), { recursive: true });
+}
+
+function touchUpload(folder, filename) {
+  ensureUploadFolders();
+  const filePath = path.join(uploadFolderPath(folder), path.basename(filename));
+  fs.writeFileSync(filePath, "smoke-test-file");
+  return filePath;
+}
+
+async function cleanupUploads() {
+  if (path.resolve(config.uploadRoot) === path.resolve(TEST_UPLOAD_ROOT)) {
+    await fs.promises.rm(TEST_UPLOAD_ROOT, { recursive: true, force: true });
+  }
+}
+
+function uploadFile(filename) {
+  touchUpload("products", filename);
+  return { filename, originalname: filename };
 }
 
 async function waitForServer() {
@@ -311,6 +365,95 @@ async function main() {
       assert(failed, "invalid video URL should fail");
     });
 
+    await test("Optional category order accepts only positive whole numbers", async () => {
+      assert(normalizeOptionalPositiveInteger("", "pCategoryOrder") === null, "empty order should be unordered");
+      assert(normalizeOptionalPositiveInteger(undefined, "pCategoryOrder") === null, "missing order should be unordered");
+      assert(normalizeOptionalPositiveInteger("1", "pCategoryOrder") === 1, "order 1 should be accepted");
+      for (const value of ["abc", "1.5", "-1", "0"]) {
+        let failed = false;
+        try {
+          normalizeOptionalPositiveInteger(value, "pCategoryOrder");
+        } catch (err) {
+          failed = err.code === "VALIDATION_ERROR";
+        }
+        assert(failed, `invalid category order ${value} should fail`);
+      }
+    });
+
+    await test("Category ordering is stable before pagination", async () => {
+      const pagingCategory = await categoryModel.create({
+        cName: `${TEST_PREFIX}paging-category`,
+        cDescription: "Pagination ordering category",
+        cStatus: "Active",
+        cImage: "fixture.png",
+      });
+      const orderedProducts = [];
+      for (let index = 0; index < 35; index += 1) {
+        const position = index === 0 ? 2 : index === 1 ? 1 : index === 2 ? 3 : index === 3 ? 2 : null;
+        orderedProducts.push({
+          pName: `${TEST_PREFIX}paging-${String(index).padStart(2, "0")}`,
+          pDescription: "Paging product",
+          pPrice: 50 + index,
+          pQuantity: 5,
+          pCategory: pagingCategory._id,
+          pImages: [`paging-${index}-a.png`, `paging-${index}-b.png`],
+          pOffer: "0",
+          pStatus: "Active",
+          pCategoryOrder: position,
+          createdAt: new Date(2020, 0, index + 1),
+          updatedAt: new Date(2020, 0, index + 1),
+        });
+      }
+      await productModel.insertMany(orderedProducts);
+      const emptyCategory = await categoryModel.create({
+        cName: `${TEST_PREFIX}empty-category`,
+        cDescription: "Empty category",
+        cStatus: "Active",
+        cImage: "fixture.png",
+      });
+      const empty = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: emptyCategory._id, page: 1, limit: 16 },
+      });
+      assert(empty.status === 200 && empty.body.Products.length === 0, "empty category should return no products");
+      assert(empty.body.pagination.totalItems === 0 && empty.body.pagination.totalPages === 1, "empty pagination metadata mismatch");
+
+      const first = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: pagingCategory._id, page: 1, limit: 16 },
+      });
+      const repeat = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: pagingCategory._id, page: 1, limit: 16 },
+      });
+      const second = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: pagingCategory._id, page: 2, limit: 16 },
+      });
+      const last = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: pagingCategory._id, page: 3, limit: 16 },
+      });
+      assert(first.status === 200 && first.body.Products.length === 16, "first page should contain 16 products");
+      assert(second.body.Products.length === 16, "second page should contain 16 products");
+      assert(last.body.Products.length === 3, "third page should contain remaining products");
+      assert(first.body.pagination.pageSize === 16 && first.body.pagination.totalItems === 35 && first.body.pagination.totalPages === 3, "pagination metadata mismatch");
+      assert(first.body.Products.map((product) => product.pName).slice(0, 4).join(",") === `${TEST_PREFIX}paging-01,${TEST_PREFIX}paging-00,${TEST_PREFIX}paging-03,${TEST_PREFIX}paging-02`, "explicit and duplicate ordering mismatch");
+      assert(first.body.Products.map((product) => product._id).join(",") === repeat.body.Products.map((product) => product._id).join(","), "ordering changed across repeated requests");
+      const seen = new Set([...first.body.Products, ...second.body.Products, ...last.body.Products].map((product) => product._id));
+      assert(seen.size === 35, "pagination produced duplicate or missing products");
+      const invalidPage = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: pagingCategory._id, page: "bad", limit: 16 },
+      });
+      const invalidLimit = await request("/api/product/product-by-category", {
+        method: "POST",
+        body: { catId: pagingCategory._id, page: 1, limit: 101 },
+      });
+      assert(invalidPage.status === 500 || invalidPage.status === 400, "invalid page should fail");
+      assert(invalidLimit.status === 500 || invalidLimit.status === 400, "invalid limit should fail");
+    });
+
     await test("Color image map persists safe filenames", async () => {
       const normalized = normalizeProductPayload({
         pColors: "Black",
@@ -434,6 +577,210 @@ async function main() {
       const res = await request("/api/product/all-product", { token: seeded.adminToken });
       assert(res.status === 200, "admin all-product failed");
       assert(JSON.stringify(res.body).includes("pCost"), "admin all-product did not include cost");
+    });
+
+    await test("All-product remains backward compatible without pagination params", async () => {
+      const legacy = await request("/api/product/all-product");
+      assert(legacy.status === 200, "legacy all-product failed");
+      assert(legacy.body.Products.length >= 7, "legacy all-product unexpectedly paginated the full catalog");
+      assert(legacy.body.pagination && legacy.body.pagination.totalItems >= legacy.body.Products.length, "legacy pagination metadata missing");
+    });
+
+    await test("Product edit persists retained, removed, and new images", async () => {
+      const imageProduct = await productModel.create({
+        pName: `${TEST_PREFIX}image-edit`,
+        pDescription: "Image edit product",
+        pPrice: 88,
+        pQuantity: 4,
+        pCategory: seeded.category._id,
+        pImages: ["image-old-a.png", "image-old-b.png"],
+        pOffer: "0",
+        pStatus: "Active",
+      });
+      touchUpload("products", "image-old-a.png");
+      touchUpload("products", "image-old-b.png");
+      const replace = await invokeController(productController.postEditProduct, {
+        body: {
+          pId: String(imageProduct._id),
+          pName: imageProduct.pName,
+          pDescription: "Image edit product updated",
+          pPrice: "88",
+          pQuantity: "4",
+          pCategory: String(seeded.category._id),
+          pOffer: "0",
+          pStatus: "Active",
+          pImages: JSON.stringify(["image-old-b.png"]),
+          pColorImages: "{}",
+          pCategoryOrder: "2",
+        },
+        files: [uploadFile("image-new-a.png")],
+      });
+      assert(replace.status === 200, "image replacement edit failed");
+      assert(JSON.stringify(replace.body.Product.pImages) === JSON.stringify(["image-old-b.png", "image-new-a.png"]), "returned image list was not final");
+      let saved = await productModel.findById(imageProduct._id);
+      assert(JSON.stringify(saved.pImages) === JSON.stringify(["image-old-b.png", "image-new-a.png"]), "replacement image list did not persist");
+      assert(saved.pCategoryOrder === 2, "product category order did not persist on edit");
+
+      const noChange = await invokeController(productController.postEditProduct, {
+        body: {
+          pId: String(imageProduct._id),
+          pName: imageProduct.pName,
+          pDescription: "Image edit product saved without image changes",
+          pPrice: "89",
+          pQuantity: "4",
+          pCategory: String(seeded.category._id),
+          pOffer: "0",
+          pStatus: "Active",
+          pImages: JSON.stringify(["image-old-b.png", "image-new-a.png"]),
+          pColorImages: "{}",
+          pCategoryOrder: "",
+        },
+        files: [],
+      });
+      assert(noChange.status === 200, "save without image changes failed");
+      saved = await productModel.findById(imageProduct._id);
+      assert(JSON.stringify(saved.pImages) === JSON.stringify(["image-old-b.png", "image-new-a.png"]), "save without image changes altered images");
+      assert(saved.pCategoryOrder === null, "empty order should persist as unordered");
+
+      const removeOne = await invokeController(productController.postEditProduct, {
+        body: {
+          pId: String(imageProduct._id),
+          pName: imageProduct.pName,
+          pDescription: "Image edit product remove one",
+          pPrice: "89",
+          pQuantity: "4",
+          pCategory: String(seeded.category._id),
+          pOffer: "0",
+          pStatus: "Active",
+          pImages: JSON.stringify(["image-new-a.png"]),
+          pColorImages: "{}",
+          pCategoryOrder: "",
+        },
+        files: [],
+      });
+      assert(removeOne.status === 200, "remove-one image edit failed");
+      saved = await productModel.findById(imageProduct._id);
+      assert(JSON.stringify(saved.pImages) === JSON.stringify(["image-new-a.png"]), "removed image stayed in database");
+
+      const invalid = await invokeController(productController.postEditProduct, {
+        body: {
+          pId: String(imageProduct._id),
+          pName: imageProduct.pName,
+          pDescription: "Invalid image edit",
+          pPrice: "89",
+          pQuantity: "4",
+          pCategory: String(seeded.category._id),
+          pOffer: "0",
+          pStatus: "Active",
+          pImages: JSON.stringify(["image-new-a.png"]),
+          pColorImages: "{}",
+          pCategoryOrder: "0",
+        },
+        files: [uploadFile("image-orphan.png")],
+      });
+      assert(invalid.status === 400, "invalid order after upload should fail");
+    });
+
+    await test("Category edit persists fields and preserves/replaces images", async () => {
+      const category = await categoryModel.create({
+        cName: `${TEST_PREFIX}editable-category`,
+        cDescription: "Before",
+        cStatus: "Active",
+        cImage: "category-old.png",
+      });
+      touchUpload("categories", "category-old.png");
+      const noImage = await invokeController(categoryController.postEditCategory, {
+        body: {
+          cId: String(category._id),
+          cName: `${TEST_PREFIX}editable-category-renamed`,
+          cDescription: "",
+          cStatus: "Disabled",
+        },
+      });
+      assert(noImage.status === 200 && noImage.body.Category, "category text/status edit failed");
+      let saved = await categoryModel.findById(category._id);
+      assert(saved.cName === noImage.body.Category.cName && saved.cName !== category.cName, "category name did not persist");
+      assert(saved.cDescription === "", "category description did not persist");
+      assert(saved.cStatus === "Disabled", "category status did not persist");
+      assert(saved.cImage === "category-old.png", "category image should have been preserved");
+
+      touchUpload("categories", "category-new.png");
+      const withImage = await invokeController(categoryController.postEditCategory, {
+        body: {
+          cId: String(category._id),
+          cName: `${TEST_PREFIX}editable-category-renamed`,
+          cDescription: "After",
+          cStatus: "Active",
+        },
+        file: { filename: "category-new.png" },
+      });
+      assert(withImage.status === 200 && withImage.body.Category.cImage === "category-new.png", "category image edit response mismatch");
+      saved = await categoryModel.findById(category._id);
+      assert(saved.cDescription === "After" && saved.cStatus === "Active" && saved.cImage === "category-new.png", "category image edit did not persist");
+    });
+
+    await test("Recommended toggle is admin-protected, persistent, paginated, and unique", async () => {
+      const customerAttempt = await request("/api/product/recommend-product", {
+        method: "POST",
+        token: seeded.customerToken,
+        body: { pId: seeded.simple._id, recommended: true },
+      });
+      assert(customerAttempt.status === 403, "customer should not toggle recommended products");
+      const recommend = await request("/api/product/recommend-product", {
+        method: "POST",
+        token: seeded.adminToken,
+        body: { pId: seeded.simple._id, recommended: true },
+      });
+      assert(recommend.status === 200 && recommend.body.Product.pRecommended === true, "admin recommend failed");
+      const repeat = await request("/api/product/recommend-product", {
+        method: "POST",
+        token: seeded.adminToken,
+        body: { pId: seeded.simple._id, recommended: true },
+      });
+      assert(repeat.status === 200 && repeat.body.Product.pRecommended === true, "repeated recommend should be idempotent");
+      await productModel.updateMany({ pName: new RegExp(`^${TEST_PREFIX}`), pStatus: "Active" }, { pRecommended: true, pQuantity: 5 });
+      await productModel.findByIdAndUpdate(seeded.far._id, { pRecommended: true, pStatus: "Disabled" });
+      const first = await request("/api/product/recommended?page=1&limit=16");
+      const second = await request("/api/product/recommended?page=2&limit=16");
+      assert(first.status === 200 && first.body.Products.length <= 16, "recommended first page failed");
+      assert(first.body.pagination.pageSize === 16, "recommended page size mismatch");
+      const ids = [...first.body.Products, ...second.body.Products].map((product) => product._id);
+      assert(ids.length === new Set(ids).size, "recommended products duplicated across pages");
+      assert(first.body.Products.every((product) => product.pRecommended === true && product.pStatus === "Active"), "recommended response leaked hidden products");
+      const unrecommend = await request("/api/product/recommend-product", {
+        method: "POST",
+        token: seeded.adminToken,
+        body: { pId: seeded.simple._id, recommended: false },
+      });
+      assert(unrecommend.status === 200 && unrecommend.body.Product.pRecommended === false, "unrecommend failed");
+    });
+
+    await test("Admin cart deletion removes only the admin's own item and refreshes totals", async () => {
+      const adminAdd = await request("/api/cart/items", {
+        method: "POST",
+        token: seeded.adminToken,
+        body: { productId: seeded.simple._id, quantity: 2 },
+      });
+      assert(adminAdd.status === 201 && adminAdd.body.cart.summary.itemCount === 2, "admin add to cart failed");
+      const customerAdd = await request("/api/cart/items", {
+        method: "POST",
+        token: seeded.customerToken,
+        body: { productId: seeded.simple._id, quantity: 1 },
+      });
+      assert(customerAdd.status === 201, "customer add to cart failed");
+      const adminRemove = await request(`/api/cart/items/${seeded.simple._id}`, {
+        method: "DELETE",
+        token: seeded.adminToken,
+      });
+      assert(adminRemove.status === 200, "admin cart remove failed");
+      assert(adminRemove.body.cart.items.length === 0, "admin cart item remained after delete");
+      assert(adminRemove.body.cart.summary.itemCount === 0 && adminRemove.body.cart.summary.total === 0, "admin cart totals did not refresh");
+      const adminRefresh = await request("/api/cart", { token: seeded.adminToken });
+      const customerRefresh = await request("/api/cart", { token: seeded.customerToken });
+      assert(adminRefresh.body.cart.items.length === 0, "deleted admin item returned after refresh");
+      assert(customerRefresh.body.cart.items.length === 1, "admin deletion touched customer cart");
+      await cartService.clearCart(seeded.admin._id);
+      await cartService.clearCart(seeded.customer._id);
     });
 
     await test("Authenticated customer product responses do not include cost or barcode", async () => {
@@ -656,6 +1003,7 @@ async function main() {
     console.log(`PRODUCT_CATALOG_SMOKE_PASS ${tests.length} tests`);
   } finally {
     await cleanup().catch(() => {});
+    await cleanupUploads().catch(() => {});
     await mongoose.disconnect().catch(() => {});
     if (server && !server.killed) server.kill();
   }
