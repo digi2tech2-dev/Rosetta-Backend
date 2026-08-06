@@ -3,8 +3,9 @@ const router = express.Router();
 const productController = require("../controller/products");
 const { optionalAuth, requireAuth, requireRole } = require("../middleware/auth");
 const { imageUpload, uploadErrorHandler } = require("../utils/upload");
+const { config } = require("../config/appConfig");
 
-const upload = imageUpload("products", 10);
+const upload = imageUpload("products", 10, { maxFileSizeMb: config.uploadMaxFileSizeMb });
 
 router.get("/all-product", optionalAuth, productController.getAllProduct);
 router.get("/recommended", productController.getRecommendedProducts);

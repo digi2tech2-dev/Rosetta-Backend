@@ -7,6 +7,7 @@ const SUPPORTED_PAYMOB_CURRENCIES = new Set(["EGP"]);
 const SUPPORTED_PAYMOB_MODES = new Set(["test", "live"]);
 const SUPPORTED_PAYMOB_ADAPTERS = new Set(["real", "fake"]);
 const SUPPORTED_GOOGLE_VERIFIERS = new Set(["google", "fake"]);
+const BYTES_PER_MB = 1024 * 1024;
 
 function readString(name, fallback) {
   const value = process.env[name];
@@ -76,7 +77,8 @@ const config = {
   maxItemQuantity: readInt("MAX_ITEM_QUANTITY", 99),
   uploadRoot: readPath("UPLOAD_ROOT", path.join(__dirname, "..", "public", "uploads")),
   uploadPublicPath: readString("UPLOAD_PUBLIC_PATH", "/uploads"),
-  uploadMaxFileSize: readInt("UPLOAD_MAX_FILE_SIZE", 2 * 1024 * 1024),
+  uploadMaxFileSizeMb: readInt("MAX_UPLOAD_FILE_SIZE_MB", readInt("UPLOAD_MAX_FILE_SIZE_MB", 20)),
+  uploadMaxFileSize: readInt("UPLOAD_MAX_FILE_SIZE", 2 * BYTES_PER_MB),
   paymobEnabled: readBool("PAYMOB_ENABLED", false),
   paymobMode: readString("PAYMOB_MODE", "test").toLowerCase(),
   paymobAdapter: readString("PAYMOB_ADAPTER", "real").toLowerCase(),
@@ -113,6 +115,9 @@ function validateConfig() {
   }
   if (config.jwtSecret.length < MIN_JWT_SECRET_LENGTH) {
     throw new Error(`JWT_SECRET must be at least ${MIN_JWT_SECRET_LENGTH} characters long`);
+  }
+  if (!Number.isSafeInteger(config.uploadMaxFileSizeMb) || config.uploadMaxFileSizeMb < 1 || config.uploadMaxFileSizeMb > 100) {
+    throw new Error("MAX_UPLOAD_FILE_SIZE_MB must be a whole number from 1 to 100");
   }
   if (config.mailTransport === "fake" && config.nodeEnv !== "test") {
     throw new Error("MAIL_TRANSPORT=fake is allowed only when NODE_ENV=test");

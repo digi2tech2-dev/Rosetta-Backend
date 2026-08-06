@@ -1,9 +1,11 @@
 const crypto = require("crypto");
+const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { config } = require("../config/appConfig");
 const { uploadFolderPath } = require("./uploadPaths");
 
+const BYTES_PER_MB = 1024 * 1024;
 const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 
@@ -23,9 +25,13 @@ function imageFileFilter(req, file, cb) {
   return cb(null, true);
 }
 
-function imageUpload(folder, maxFiles) {
+function imageUpload(folder, maxFiles, options = {}) {
+  const maxFileSizeMb = Number(options.maxFileSizeMb) || Math.ceil(config.uploadMaxFileSize / BYTES_PER_MB);
+  const maxFileSizeBytes = Number(options.maxFileSizeBytes) || maxFileSizeMb * BYTES_PER_MB;
   const storage = multer.diskStorage({
     destination(req, file, cb) {
+      req.uploadMaxFileSizeMb = maxFileSizeMb;
+      req.uploadMaxFileSizeBytes = maxFileSizeBytes;
       cb(null, uploadFolderPath(folder));
     },
     filename(req, file, cb) {
@@ -37,22 +43,43 @@ function imageUpload(folder, maxFiles) {
     storage,
     fileFilter: imageFileFilter,
     limits: {
-      fileSize: config.uploadMaxFileSize,
+      // Busboy trips the limit at the boundary, so add one byte to make the advertised maximum inclusive.
+      fileSize: maxFileSizeBytes + 1,
       files: maxFiles,
     },
   });
+}
+
+function cleanupUploadedFiles(req) {
+  const files = [
+    ...(Array.isArray(req.files) ? req.files : []),
+    ...(req.file ? [req.file] : []),
+  ];
+  for (const file of files) {
+    if (file && file.path) {
+      fs.unlink(file.path, () => {});
+    }
+  }
 }
 
 function uploadErrorHandler(err, req, res, next) {
   if (!err) {
     return next();
   }
+  cleanupUploadedFiles(req);
   if (err instanceof multer.MulterError) {
     const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    const code = err.code === "LIMIT_FILE_SIZE" ? "IMAGE_TOO_LARGE" : "VALIDATION_ERROR";
+    const maxFileSizeMb = req.uploadMaxFileSizeMb || Math.ceil(config.uploadMaxFileSize / BYTES_PER_MB);
+    const maxFileSizeBytes = req.uploadMaxFileSizeBytes || maxFileSizeMb * BYTES_PER_MB;
     return res.status(status).json({
       success: false,
-      code: status === 413 ? "PAYLOAD_TOO_LARGE" : "VALIDATION_ERROR",
-      error: err.message,
+      code,
+      error: err.code === "LIMIT_FILE_SIZE"
+        ? `Image exceeds the maximum allowed size of ${maxFileSizeMb} MB`
+        : err.message,
+      maxFileSizeMb: err.code === "LIMIT_FILE_SIZE" ? maxFileSizeMb : undefined,
+      maxFileSizeBytes: err.code === "LIMIT_FILE_SIZE" ? maxFileSizeBytes : undefined,
     });
   }
   return res.status(err.status || 400).json({

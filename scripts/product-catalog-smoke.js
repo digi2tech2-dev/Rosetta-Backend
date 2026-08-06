@@ -54,6 +54,33 @@ async function request(path, options = {}) {
   return { status: response.status, body };
 }
 
+async function multipartRequest(path, { token, fields = {}, files = [] } = {}) {
+  const formData = new FormData();
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) formData.append(key, String(value));
+  });
+  files.forEach((file) => {
+    formData.append(
+      file.field || "pImage",
+      new Blob([Buffer.alloc(file.size, file.byte || 1)], { type: file.type || "image/png" }),
+      file.filename
+    );
+  });
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    headers: token ? { authorization: `Bearer ${token}` } : undefined,
+    body: formData,
+  });
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
+  return { status: response.status, body };
+}
+
 async function invokeController(handler, req = {}) {
   const res = {
     statusCode: 200,
@@ -96,6 +123,27 @@ async function cleanupUploads() {
 function uploadFile(filename) {
   touchUpload("products", filename);
   return { filename, originalname: filename };
+}
+
+function uploadNames(folder = "products") {
+  const folderPath = uploadFolderPath(folder);
+  if (!fs.existsSync(folderPath)) return [];
+  return fs.readdirSync(folderPath).sort();
+}
+
+function productUploadFields(seeded, nameSuffix, overrides = {}) {
+  return {
+    pName: `${TEST_PREFIX}upload-${nameSuffix}`,
+    pDescription: "Large image upload smoke product",
+    pStatus: "Active",
+    pCategory: String(seeded.category._id),
+    pQuantity: "5",
+    pCost: "10",
+    pPrice: "20",
+    pOffer: "0",
+    pColorImages: "{}",
+    ...overrides,
+  };
 }
 
 async function waitForServer() {
@@ -452,6 +500,128 @@ async function main() {
       });
       assert(invalidPage.status === 500 || invalidPage.status === 400, "invalid page should fail");
       assert(invalidLimit.status === 500 || invalidLimit.status === 400, "invalid limit should fail");
+    });
+
+    await test("Product upload accepts valid images through the configured 20 MB boundary", async () => {
+      const maxBytes = config.uploadMaxFileSizeMb * 1024 * 1024;
+      const cases = [
+        {
+          suffix: "small-valid",
+          files: [
+            { filename: "small-a.png", size: 1024 },
+            { filename: "small-b.png", size: 2048 },
+          ],
+        },
+        {
+          suffix: "below-boundary",
+          files: [
+            { filename: "below-a.png", size: maxBytes - 1 },
+            { filename: "below-b.png", size: 1024 },
+          ],
+        },
+        {
+          suffix: "exact-boundary",
+          files: [
+            { filename: "exact-a.png", size: maxBytes },
+            { filename: "exact-b.png", size: 1024 },
+          ],
+        },
+        {
+          suffix: "multiple-valid",
+          files: [
+            { filename: "multi-a.png", size: 1024 * 1024 },
+            { filename: "multi-b.png", size: 1024 * 1024 },
+            { filename: "multi-c.png", size: 1024 * 1024 },
+          ],
+        },
+      ];
+
+      for (const scenario of cases) {
+        const created = await multipartRequest("/api/product/add-product", {
+          token: seeded.adminToken,
+          fields: productUploadFields(seeded, scenario.suffix),
+          files: scenario.files,
+        });
+        assert(created.status === 200, `${scenario.suffix} upload failed with ${created.status}`);
+        assert(created.body.Product && created.body.Product.pImages.length === scenario.files.length, `${scenario.suffix} returned image list mismatch`);
+        const saved = await productModel.findById(created.body.Product._id);
+        assert(saved && saved.pImages.length === scenario.files.length, `${scenario.suffix} images did not persist`);
+      }
+    });
+
+    await test("Oversized product creation returns IMAGE_TOO_LARGE without partial records or orphan files", async () => {
+      const maxBytes = config.uploadMaxFileSizeMb * 1024 * 1024;
+      const beforeUploads = uploadNames("products").join(",");
+      const fields = productUploadFields(seeded, "oversized-create");
+      const created = await multipartRequest("/api/product/add-product", {
+        token: seeded.adminToken,
+        fields,
+        files: [
+          { filename: "valid-before-oversized.png", size: 1024 },
+          { filename: "too-large.png", size: maxBytes + 1 },
+        ],
+      });
+      const afterUploads = uploadNames("products").join(",");
+      const savedCount = await productModel.countDocuments({ pName: fields.pName });
+      assert(created.status === 413, "oversized create should return HTTP 413");
+      assert(created.body.code === "IMAGE_TOO_LARGE", "oversized create code mismatch");
+      assert(created.body.maxFileSizeMb === config.uploadMaxFileSizeMb, "oversized create max MB missing");
+      assert(savedCount === 0, "oversized create left a partial product");
+      assert(afterUploads === beforeUploads, "oversized create left orphan uploads");
+    });
+
+    await test("Oversized product edit keeps existing images unchanged and cleans new uploads", async () => {
+      const maxBytes = config.uploadMaxFileSizeMb * 1024 * 1024;
+      const imageProduct = await productModel.create({
+        pName: `${TEST_PREFIX}oversized-edit`,
+        pDescription: "Oversized edit product",
+        pPrice: 88,
+        pQuantity: 4,
+        pCategory: seeded.category._id,
+        pImages: ["oversized-old-a.png", "oversized-old-b.png"],
+        pOffer: "0",
+        pStatus: "Active",
+      });
+      touchUpload("products", "oversized-old-a.png");
+      touchUpload("products", "oversized-old-b.png");
+      const beforeUploads = uploadNames("products").join(",");
+      const edit = await multipartRequest("/api/product/edit-product", {
+        token: seeded.adminToken,
+        fields: productUploadFields(seeded, "oversized-edit", {
+          pId: String(imageProduct._id),
+          pName: imageProduct.pName,
+          pDescription: "Oversized edit attempted",
+          pImages: JSON.stringify(["oversized-old-b.png"]),
+        }),
+        files: [
+          { field: "pEditImages", filename: "oversized-replacement.png", size: maxBytes + 1 },
+        ],
+      });
+      const saved = await productModel.findById(imageProduct._id);
+      const afterUploads = uploadNames("products").join(",");
+      assert(edit.status === 413, "oversized edit should return HTTP 413");
+      assert(edit.body.code === "IMAGE_TOO_LARGE", "oversized edit code mismatch");
+      assert(JSON.stringify(saved.pImages) === JSON.stringify(["oversized-old-a.png", "oversized-old-b.png"]), "oversized edit changed existing images");
+      assert(afterUploads === beforeUploads, "oversized edit left orphan uploads");
+    });
+
+    await test("Invalid product upload MIME returns a structured validation error and cleans files", async () => {
+      const beforeUploads = uploadNames("products").join(",");
+      const fields = productUploadFields(seeded, "invalid-mime");
+      const created = await multipartRequest("/api/product/add-product", {
+        token: seeded.adminToken,
+        fields,
+        files: [
+          { filename: "valid-before-invalid.png", size: 1024 },
+          { filename: "invalid.txt", size: 1024, type: "text/plain" },
+        ],
+      });
+      const afterUploads = uploadNames("products").join(",");
+      const savedCount = await productModel.countDocuments({ pName: fields.pName });
+      assert(created.status === 400, "invalid MIME should return HTTP 400");
+      assert(created.body.code === "VALIDATION_ERROR", "invalid MIME code mismatch");
+      assert(savedCount === 0, "invalid MIME left a partial product");
+      assert(afterUploads === beforeUploads, "invalid MIME left orphan uploads");
     });
 
     await test("Color image map persists safe filenames", async () => {
