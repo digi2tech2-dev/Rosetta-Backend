@@ -243,12 +243,28 @@ class Product {
     return Math.max(0, Math.min(...indexes));
   }
 
-  static mapUploadedColorFiles(body, files) {
+  static mapUploadedColorFiles(body, files, currentProduct) {
     const colorMap = Product.parseColorImageBody(body.pColorImages);
     const byOriginalName = new Map(files.map((file, index) => [file.originalname, { file, index }]));
+    const currentColorImages = currentProduct && currentProduct.pColorImages && typeof currentProduct.pColorImages === "object"
+      ? currentProduct.pColorImages
+      : {};
+    const retainedColorFileNames = new Set(Object.values(currentColorImages).map((currentValue) => path.basename(String(
+      currentValue && typeof currentValue === "object"
+        ? currentValue.fileName || currentValue.image || currentValue.url || ""
+        : currentValue || ""
+    ).replace(/\\/g, "/"))).filter(Boolean));
     let changed = false;
     for (const [color, value] of Object.entries(colorMap)) {
       if (!value || typeof value !== "object" || Number.isInteger(value.uploadIndex)) continue;
+      const currentValue = currentColorImages[color];
+      const currentFileName = path.basename(String(
+        currentValue && typeof currentValue === "object"
+          ? currentValue.fileName || currentValue.image || currentValue.url || ""
+          : currentValue || ""
+      ).replace(/\\/g, "/"));
+      const nextFileName = path.basename(String(value.fileName || value.image || value.url || "").replace(/\\/g, "/"));
+      if (nextFileName && (nextFileName === currentFileName || retainedColorFileNames.has(nextFileName))) continue;
       const match = byOriginalName.get(value.fileName);
       if (match) {
         colorMap[color] = { ...value, uploadIndex: match.index };
@@ -355,6 +371,96 @@ class Product {
       serialized.suggestedProducts = suggested.map((product) => serializeProduct(product));
     }
     return serialized;
+  }
+
+  static normalizeProductIdList(value) {
+    if (!Array.isArray(value)) {
+      throw Object.assign(new Error("productArray must be an array"), {
+        status: 400,
+        code: "VALIDATION_ERROR",
+      });
+    }
+    const unique = [];
+    const seen = new Set();
+    for (const item of value) {
+      const raw = typeof item === "object" && item !== null
+        ? item.productId || item.id || item._id || item.product
+        : item;
+      const id = String(raw || "").trim();
+      if (!id) continue;
+      if (!isValidObjectId(id)) {
+        throw Object.assign(new Error("product ids must be valid"), {
+          status: 400,
+          code: "VALIDATION_ERROR",
+        });
+      }
+      if (!seen.has(id)) {
+        seen.add(id);
+        unique.push(mongoose.Types.ObjectId(id));
+      }
+    }
+    return unique.slice(0, config.maxCartItems);
+  }
+
+  static async cartRecommendationProducts(productIds, limit = 6) {
+    const max = Math.min(Math.max(Number.parseInt(limit, 10) || 6, 1), 6);
+    if (!productIds.length) return [];
+    const excluded = new Set(productIds.map((id) => String(id)));
+    const selected = [];
+    const pushProduct = (product) => {
+      if (!product) return;
+      const id = String(product._id);
+      if (excluded.has(id)) return;
+      if (String(product.pStatus || "").toLowerCase() !== "active") return;
+      if (Number(product.pQuantity || 0) <= 0) return;
+      excluded.add(id);
+      selected.push(product);
+    };
+
+    const cartProducts = await productModel
+      .find({ _id: { $in: productIds } })
+      .populate("relatedProducts", "_id pName pPrice pOffer pImages pCategory pBrand pStatus pQuantity pRecommended")
+      .populate("pCategory", "_id cName")
+      .sort({ _id: 1 });
+    const cartOrder = new Map(productIds.map((id, index) => [String(id), index]));
+    cartProducts.sort((left, right) => (cartOrder.get(String(left._id)) || 0) - (cartOrder.get(String(right._id)) || 0));
+
+    cartProducts.forEach((product) => {
+      (product.relatedProducts || []).forEach(pushProduct);
+    });
+    if (selected.length >= max) return selected.slice(0, max);
+
+    const categoryIds = [...new Set(cartProducts
+      .map((product) => product.pCategory && (product.pCategory._id || product.pCategory))
+      .filter(Boolean)
+      .map((id) => String(id)))].map((id) => mongoose.Types.ObjectId(id));
+    if (categoryIds.length) {
+      const categoryProducts = await productModel
+        .find({
+          _id: { $nin: Array.from(excluded) },
+          pCategory: { $in: categoryIds },
+          pStatus: "Active",
+          pQuantity: { $gt: 0 },
+        })
+        .populate("pCategory", "_id cName")
+        .sort({ pCategoryOrder: 1, createdAt: -1, _id: -1 })
+        .limit(max * 3);
+      categoryProducts.forEach(pushProduct);
+    }
+    if (selected.length >= max) return selected.slice(0, max);
+
+    const recommendedProducts = await productModel
+      .find({
+        _id: { $nin: Array.from(excluded) },
+        pRecommended: true,
+        pStatus: "Active",
+        pQuantity: { $gt: 0 },
+      })
+      .populate("pCategory", "_id cName")
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(max * 2);
+    recommendedProducts.forEach(pushProduct);
+    return selected.slice(0, max);
   }
 
   static async validateRelations(extraData) {
@@ -513,7 +619,6 @@ class Product {
       pImages,
     } = req.body;
     const editImages = req.files || [];
-    Product.mapUploadedColorFiles(req.body, editImages);
 
     if (
       !pId ||
@@ -555,6 +660,7 @@ class Product {
         Product.deleteImages(editImages, "file");
         return res.status(404).json({ error: "Product not found" });
       }
+      Product.mapUploadedColorFiles(req.body, editImages, currentProduct);
       retainedInfo = Product.parseRetainedImages(pImages, currentProduct.pImages || []);
       extraData = normalizeProductPayload(req.body, {
         currentProductId: pId,
@@ -764,6 +870,20 @@ class Product {
       return res.json({ Products: Products.map((product) => serializeProduct(product)) });
     } catch (err) {
       return next(err);
+    }
+  }
+
+  async getCartRecommendations(req, res, next) {
+    try {
+      const productIds = Product.normalizeProductIdList(req.body.productArray || req.body.productIds || req.body.cartItems || []);
+      const limit = req.body.limit;
+      const products = await Product.cartRecommendationProducts(productIds, limit);
+      return res.json({
+        success: true,
+        Products: products.map((product) => serializeProduct(product)),
+      });
+    } catch (err) {
+      return Product.sendProductError(res, err);
     }
   }
 

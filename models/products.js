@@ -38,6 +38,12 @@ const productSchema = new mongoose.Schema(
       trim: true,
       maxlength: 120,
     },
+    pMerchantName: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 120,
+    },
     pVideo: {
       type: String,
       default: null,

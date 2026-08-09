@@ -53,6 +53,7 @@ function serializeProduct(product, options = {}) {
 
   if (includeAdmin) {
     response.pCost = doc.pCost === undefined ? null : doc.pCost;
+    response.pMerchantName = doc.pMerchantName || null;
   }
 
   Object.keys(response).forEach((key) => response[key] === undefined && delete response[key]);

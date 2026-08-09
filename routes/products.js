@@ -12,6 +12,7 @@ router.get("/recommended", productController.getRecommendedProducts);
 router.post("/product-by-category", productController.getProductByCategory);
 router.post("/product-by-price", productController.getProductByPrice);
 router.post("/wish-product", productController.getWishProduct);
+router.post("/cart-recommendations", productController.getCartRecommendations);
 router.post("/cart-product", productController.getCartProduct);
 
 router.post(

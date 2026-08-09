@@ -142,6 +142,7 @@ function snapshots(checkout) {
     lineTotal: item.lineTotal,
     selectedColor: item.selectedColor || null,
     selectedSize: item.selectedSize || null,
+    merchantName: item.merchantName || null,
   }));
 }
 
@@ -221,6 +222,7 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
   const minor = amountMinor(checkout.summary.grandTotal);
   const fingerprint = requestFingerprint({ method, shippingAddress, savedAddressId: body.savedAddressId, couponCode, cartItems: checkout.items, pricing: checkout.summary });
   const customer = await userModel.findById(customerId);
+  const customerSnapshot = await orderService.buildRegisteredCustomerSnapshot(customerId, checkout.shippingAddress);
   const orderId = new mongoose.Types.ObjectId();
   const attemptId = new mongoose.Types.ObjectId();
   const internalReference = `rosetta_${orderId}_${attemptId}`;
@@ -241,6 +243,7 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
       _id: orderId,
       user: customerId,
       customerType: "registered",
+      customerSnapshot,
       orderNumber: orderService.generateOrderNumber(),
       items: snapshots(checkout),
       allProduct: checkout.items.map((item) => ({
@@ -403,6 +406,7 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
   const internalReference = `rosetta_${orderId}_${attemptId}`;
   const expiresAt = new Date(Date.now() + config.paymobPaymentTtlMinutes * 60 * 1000);
   const tracking = generateTrackingToken();
+  const customerSnapshot = orderService.guestCustomerSnapshot(guestCustomer, shippingAddress);
   let redemption = null;
   const deducted = [];
   let order;
@@ -419,6 +423,7 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
       _id: orderId,
       customerType: "guest",
       guestCustomer,
+      customerSnapshot,
       guestTrackingTokenHash: tracking.hash,
       guestTrackingTokenCreatedAt: new Date(),
       orderNumber: orderService.generateOrderNumber(),

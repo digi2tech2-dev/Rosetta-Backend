@@ -47,6 +47,66 @@ function money(value) {
   return fromCents(toCents(value || 0));
 }
 
+function quantityShippingDiscountPercent(totalQuantity) {
+  const quantity = Number(totalQuantity) || 0;
+  if (quantity >= 6) return 100;
+  if (quantity >= 4) return 50;
+  return 0;
+}
+
+function nextQuantityShippingThreshold(totalQuantity) {
+  const quantity = Number(totalQuantity) || 0;
+  if (quantity >= 6) return null;
+  return quantity >= 4 ? 6 : 4;
+}
+
+function calculateQuantityShippingDiscountCents({ totalQuantity, baseShippingCents }) {
+  const quantity = Math.max(0, Number(totalQuantity) || 0);
+  const baseCents = Math.max(0, Number.isFinite(Number(baseShippingCents)) ? Math.round(Number(baseShippingCents)) : 0);
+  const discountPercent = quantityShippingDiscountPercent(quantity);
+  const discountAmountCents = Math.min(baseCents, Math.round((baseCents * discountPercent) / 100));
+  const finalShippingCents = Math.max(0, baseCents - discountAmountCents);
+  const nextThreshold = nextQuantityShippingThreshold(quantity);
+  return {
+    totalQuantity: quantity,
+    discountPercent,
+    discountAmountCents,
+    finalShippingCents,
+    nextThreshold,
+    quantityNeededForNextThreshold: nextThreshold === null ? 0 : Math.max(0, nextThreshold - quantity),
+  };
+}
+
+function calculateQuantityShippingDiscount({ totalQuantity, baseShippingCost }) {
+  const result = calculateQuantityShippingDiscountCents({
+    totalQuantity,
+    baseShippingCents: toCents(baseShippingCost || 0),
+  });
+  return {
+    totalQuantity: result.totalQuantity,
+    discountPercent: result.discountPercent,
+    discountAmount: fromCents(result.discountAmountCents),
+    shippingAfterQuantityDiscount: fromCents(result.finalShippingCents),
+    nextThreshold: result.nextThreshold,
+    quantityNeededForNextThreshold: result.quantityNeededForNextThreshold,
+  };
+}
+
+function calculateQuantityShippingPromotionMetadata(totalQuantity) {
+  const result = calculateQuantityShippingDiscountCents({
+    totalQuantity,
+    baseShippingCents: 0,
+  });
+  return {
+    type: "quantity",
+    totalQuantity: result.totalQuantity,
+    discountPercent: result.discountPercent,
+    discountAmount: 0,
+    nextThreshold: result.nextThreshold,
+    quantityNeededForNextThreshold: result.quantityNeededForNextThreshold,
+  };
+}
+
 function getEffectiveProductPriceCents(product) {
   return toCents(product.pPrice);
 }
@@ -68,10 +128,12 @@ function moneySummary(subtotalCents, itemCount) {
   const shippingCents = calculateShippingCents(subtotalCents);
   return {
     itemCount,
+    totalQuantity: itemCount,
     subtotal: fromCents(subtotalCents),
     shippingFee: fromCents(shippingCents),
     total: fromCents(subtotalCents + shippingCents),
     currency: config.storeCurrency,
+    shippingPromotion: calculateQuantityShippingPromotionMetadata(itemCount),
   };
 }
 
@@ -153,6 +215,7 @@ function serializeMoneySummary({ itemCount, merchandiseSubtotalCents, discountCe
   const grandTotalCents = Math.max(0, merchandiseSubtotalCents - discountCents + shippingCents);
   return {
     itemCount,
+    totalQuantity: itemCount,
     subtotal: fromCents(merchandiseSubtotalCents),
     merchandiseSubtotal: fromCents(merchandiseSubtotalCents),
     discountTotal: fromCents(discountCents),
@@ -206,6 +269,7 @@ async function buildServerCart(customerId) {
       productId: product._id,
       name: product.pName,
       image: Array.isArray(product.pImages) ? product.pImages[0] : null,
+      merchantName: product.pMerchantName || null,
       unitPriceCents,
       lineTotalCents,
       unitPrice: fromCents(unitPriceCents),
@@ -258,6 +322,7 @@ async function buildGuestCart(rawItems) {
       productId: product._id,
       name: product.pName,
       image: Array.isArray(product.pImages) ? product.pImages[0] : null,
+      merchantName: product.pMerchantName || null,
       unitPriceCents,
       lineTotalCents,
       unitPrice: fromCents(unitPriceCents),
@@ -364,7 +429,7 @@ function resolveFirstOrderPromotion({ settings, subtotalCents, isFirstOrder }) {
   };
 }
 
-async function resolveShipping({ settings, address, subtotalCents }) {
+async function resolveShipping({ settings, address, subtotalCents, totalQuantity }) {
   const governorate = normalizePlace(address.governorate || address.city);
   const city = normalizePlace(address.city || address.area);
   if (!governorate) {
@@ -384,6 +449,11 @@ async function resolveShipping({ settings, address, subtotalCents }) {
   const thresholdCents = threshold === null || threshold === undefined ? 0 : toCents(threshold);
   const freeShippingApplied = thresholdCents > 0 && subtotalCents >= thresholdCents;
   const chargedFeeCents = freeShippingApplied ? 0 : originalFeeCents;
+  const quantityPromotion = calculateQuantityShippingDiscountCents({
+    totalQuantity,
+    baseShippingCents: chargedFeeCents,
+  });
+  const finalFeeCents = quantityPromotion.finalShippingCents;
   if (!rule && originalFeeCents === 0 && !settings) {
     throw httpError(409, "SHIPPING_UNAVAILABLE", "Shipping is unavailable for this address");
   }
@@ -391,6 +461,8 @@ async function resolveShipping({ settings, address, subtotalCents }) {
     rule,
     originalFeeCents,
     chargedFeeCents,
+    finalFeeCents,
+    quantityPromotion,
     freeShippingApplied,
     snapshot: {
       ruleId: rule ? String(rule._id) : null,
@@ -398,8 +470,17 @@ async function resolveShipping({ settings, address, subtotalCents }) {
       governorate: address.governorate || "",
       city: address.city || "",
       originalFee: fromCents(originalFeeCents),
-      chargedFee: fromCents(chargedFeeCents),
-      freeShippingApplied,
+      baseFee: fromCents(chargedFeeCents),
+      quantityDiscountPercent: quantityPromotion.discountPercent,
+      quantityDiscountAmount: fromCents(quantityPromotion.discountAmountCents),
+      chargedFee: fromCents(finalFeeCents),
+      finalFee: fromCents(finalFeeCents),
+      freeShippingApplied: freeShippingApplied || (chargedFeeCents > 0 && finalFeeCents === 0),
+      thresholdFreeShippingApplied: freeShippingApplied,
+      quantityPromotionApplied: quantityPromotion.discountAmountCents > 0,
+      totalQuantity: quantityPromotion.totalQuantity,
+      nextQuantityThreshold: quantityPromotion.nextThreshold,
+      quantityNeededForNextThreshold: quantityPromotion.quantityNeededForNextThreshold,
     },
   };
 }
@@ -426,12 +507,12 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
     ? null
     : resolveFirstOrderPromotion({ settings, subtotalCents: cartData.subtotalCents, isFirstOrder });
   const discount = couponDiscount || firstOrderDiscount || { source: "none", discountCents: 0 };
-  const shipping = await resolveShipping({ settings, address, subtotalCents: cartData.subtotalCents });
+  const shipping = await resolveShipping({ settings, address, subtotalCents: cartData.subtotalCents, totalQuantity: cartData.itemCount });
   const summary = serializeMoneySummary({
     itemCount: cartData.itemCount,
     merchandiseSubtotalCents: cartData.subtotalCents,
     discountCents: discount.discountCents,
-    shippingCents: shipping.chargedFeeCents,
+    shippingCents: shipping.finalFeeCents,
     currency: settings.currency || config.storeCurrency,
   });
   return {
@@ -446,15 +527,29 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
       firstOrderPromotion: firstOrderDiscount ? firstOrderDiscount.snapshot : null,
     },
     shipping: {
-      fee: fromCents(shipping.chargedFeeCents),
+      fee: fromCents(shipping.finalFeeCents),
       originalFee: fromCents(shipping.originalFeeCents),
-      freeShippingApplied: shipping.freeShippingApplied,
+      baseCost: fromCents(shipping.chargedFeeCents),
+      discountPercent: shipping.quantityPromotion.discountPercent,
+      discountAmount: fromCents(shipping.quantityPromotion.discountAmountCents),
+      finalCost: fromCents(shipping.finalFeeCents),
+      freeShippingApplied: shipping.freeShippingApplied || (shipping.chargedFeeCents > 0 && shipping.finalFeeCents === 0),
+      thresholdFreeShippingApplied: shipping.freeShippingApplied,
       ruleId: shipping.rule ? String(shipping.rule._id) : null,
       name: shipping.snapshot.name,
+    },
+    shippingPromotion: {
+      type: "quantity",
+      totalQuantity: shipping.quantityPromotion.totalQuantity,
+      discountPercent: shipping.quantityPromotion.discountPercent,
+      discountAmount: fromCents(shipping.quantityPromotion.discountAmountCents),
+      nextThreshold: shipping.quantityPromotion.nextThreshold,
+      quantityNeededForNextThreshold: shipping.quantityPromotion.quantityNeededForNextThreshold,
     },
     summary,
     pricingSnapshot: {
       currency: summary.currency,
+      totalQuantity: summary.totalQuantity,
       merchandiseSubtotal: summary.merchandiseSubtotal,
       discountTotal: summary.discountTotal,
       shippingFee: summary.shippingFee,
@@ -463,7 +558,7 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
       couponSnapshot: couponDiscount ? couponDiscount.snapshot : null,
       firstOrderPromotionSnapshot: firstOrderDiscount ? firstOrderDiscount.snapshot : null,
       shippingSnapshot: shipping.snapshot,
-      pricingVersion: "2I",
+      pricingVersion: "2Q",
     },
     coupon: couponDiscount ? couponDiscount.coupon : null,
   };
@@ -484,12 +579,12 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
     isFirstOrder: false,
   });
   const discount = couponDiscount || { source: "none", discountCents: 0 };
-  const shipping = await resolveShipping({ settings, address, subtotalCents: cartData.subtotalCents });
+  const shipping = await resolveShipping({ settings, address, subtotalCents: cartData.subtotalCents, totalQuantity: cartData.itemCount });
   const summary = serializeMoneySummary({
     itemCount: cartData.itemCount,
     merchandiseSubtotalCents: cartData.subtotalCents,
     discountCents: discount.discountCents,
-    shippingCents: shipping.chargedFeeCents,
+    shippingCents: shipping.finalFeeCents,
     currency: settings.currency || config.storeCurrency,
   });
   return {
@@ -504,15 +599,29 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
       firstOrderPromotion: null,
     },
     shipping: {
-      fee: fromCents(shipping.chargedFeeCents),
+      fee: fromCents(shipping.finalFeeCents),
       originalFee: fromCents(shipping.originalFeeCents),
-      freeShippingApplied: shipping.freeShippingApplied,
+      baseCost: fromCents(shipping.chargedFeeCents),
+      discountPercent: shipping.quantityPromotion.discountPercent,
+      discountAmount: fromCents(shipping.quantityPromotion.discountAmountCents),
+      finalCost: fromCents(shipping.finalFeeCents),
+      freeShippingApplied: shipping.freeShippingApplied || (shipping.chargedFeeCents > 0 && shipping.finalFeeCents === 0),
+      thresholdFreeShippingApplied: shipping.freeShippingApplied,
       ruleId: shipping.rule ? String(shipping.rule._id) : null,
       name: shipping.snapshot.name,
+    },
+    shippingPromotion: {
+      type: "quantity",
+      totalQuantity: shipping.quantityPromotion.totalQuantity,
+      discountPercent: shipping.quantityPromotion.discountPercent,
+      discountAmount: fromCents(shipping.quantityPromotion.discountAmountCents),
+      nextThreshold: shipping.quantityPromotion.nextThreshold,
+      quantityNeededForNextThreshold: shipping.quantityPromotion.quantityNeededForNextThreshold,
     },
     summary,
     pricingSnapshot: {
       currency: summary.currency,
+      totalQuantity: summary.totalQuantity,
       merchandiseSubtotal: summary.merchandiseSubtotal,
       discountTotal: summary.discountTotal,
       shippingFee: summary.shippingFee,
@@ -521,7 +630,7 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
       couponSnapshot: couponDiscount ? couponDiscount.snapshot : null,
       firstOrderPromotionSnapshot: null,
       shippingSnapshot: shipping.snapshot,
-      pricingVersion: "2M",
+      pricingVersion: "2Q",
     },
     coupon: couponDiscount ? couponDiscount.coupon : null,
   };
@@ -603,6 +712,9 @@ module.exports = {
   money,
   getEffectiveProductPrice,
   getEffectiveProductPriceCents,
+  calculateQuantityShippingDiscount,
+  calculateQuantityShippingDiscountCents,
+  calculateQuantityShippingPromotionMetadata,
   calculateShippingCents,
   moneySummary,
   calculateCheckoutPricing,

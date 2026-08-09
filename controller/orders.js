@@ -21,10 +21,10 @@ class Order {
     try {
       const Orders = await orderModel
         .find({})
-        .populate("allProduct.id", "pName pImages pPrice")
+        .populate("allProduct.id", "pName pImages pPrice pMerchantName")
         .populate("user", "name email")
         .sort({ _id: -1 });
-      return res.json({ Orders: Orders.map(orderService.normalizeOrder) });
+      return res.json({ Orders: Orders.map((order) => orderService.normalizeOrder(order, { admin: true })) });
     } catch (err) {
       return next(err);
     }
@@ -42,10 +42,10 @@ class Order {
 
       const Order = await orderModel
         .find({ user: targetUserId })
-        .populate("allProduct.id", "pName pImages pPrice")
+        .populate("allProduct.id", "pName pImages pPrice pMerchantName")
         .populate("user", "name email")
         .sort({ _id: -1 });
-      return res.json({ Order: Order.map(orderService.normalizeOrder) });
+      return res.json({ Order: Order.map((order) => orderService.normalizeOrder(order, { admin: req.auth.role === 1 })) });
     } catch (err) {
       return next(err);
     }
@@ -132,7 +132,8 @@ class Order {
       const order = await orderService.updateStatus(
         req.params.orderId,
         req.body.orderStatus,
-        req.auth.userId
+        req.auth.userId,
+        { admin: true }
       );
       return res.json({ success: true, order });
     } catch (err) {
@@ -154,7 +155,7 @@ class Order {
         Delivered: "delivered",
         Cancelled: "cancelled",
       }[status] || status;
-      const order = await orderService.updateStatus(oId, canonical, req.auth.userId);
+      const order = await orderService.updateStatus(oId, canonical, req.auth.userId, { admin: true });
       return res.json({ success: "Order updated successfully", order });
     } catch (err) {
       return this.sendServiceError(res, err);

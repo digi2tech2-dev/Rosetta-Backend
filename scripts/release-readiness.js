@@ -43,6 +43,52 @@ function listFiles(dir, result = []) {
   return result;
 }
 
+function git(args, cwd = repoRoot) {
+  return spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function gitContext(relativePath) {
+  if (relativePath.startsWith("backend/")) {
+    return { cwd: backendRoot, relativePath: relativePath.slice("backend/".length) };
+  }
+  if (relativePath.startsWith("frontend/")) {
+    return { cwd: frontendRoot, relativePath: relativePath.slice("frontend/".length) };
+  }
+  return { cwd: repoRoot, relativePath };
+}
+
+function isGitTracked(relativePath) {
+  const context = gitContext(relativePath);
+  const result = git(["ls-files", "--", context.relativePath], context.cwd);
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+function isGitIgnored(relativePath) {
+  const context = gitContext(relativePath);
+  const result = git(["check-ignore", "--quiet", context.relativePath], context.cwd);
+  return result.status === 0;
+}
+
+function assertDotenvNotPackaged(relativePath) {
+  if (!exists(relativePath)) {
+    pass(`secret-file:${relativePath}`);
+    return;
+  }
+  if (isGitTracked(relativePath)) {
+    fail(`secret-file:${relativePath}`, "tracked dotenv file must not be packaged");
+    return;
+  }
+  if (isGitIgnored(relativePath)) {
+    pass(`secret-file:${relativePath}:ignored-local`);
+    return;
+  }
+  fail(`secret-file:${relativePath}`, "untracked dotenv file is not ignored");
+}
+
 function assertConfigRejects(name, env) {
   const script = "try { require('./config/appConfig').validateConfig(); process.exit(0); } catch (err) { process.exit(42); }";
   const result = spawnSync(process.execPath, ["-e", script], {
@@ -81,16 +127,24 @@ function assertConfigRejects(name, env) {
   "docs/GIT_RELEASE_PLAN.md",
 ].forEach(assertFile);
 
-for (const envFile of [
-  path.join(backendRoot, ".env"),
-  path.join(frontendRoot, ".env"),
-  path.join(repoRoot, ".env"),
-]) {
-  if (fs.existsSync(envFile)) {
-    fail(`secret-file:${path.relative(repoRoot, envFile)}`, "dotenv file must not be packaged");
-  } else {
-    pass(`secret-file:${path.relative(repoRoot, envFile)}`);
+[
+  "backend/.env",
+  "backend/.env.production",
+  "frontend/.env",
+  "frontend/.env.production",
+  ".env",
+  ".env.production",
+].forEach(assertDotenvNotPackaged);
+
+const packagedDotenvFiles = listFiles(path.join(frontendRoot, "dist"))
+  .map((file) => path.relative(frontendRoot, file))
+  .filter((relativePath) => /^dist[\\/]\.env(?:\.|$)/i.test(relativePath));
+if (packagedDotenvFiles.length) {
+  for (const relativePath of packagedDotenvFiles) {
+    fail(`secret-file:frontend/${relativePath}`, "dotenv file is present in build output");
   }
+} else {
+  pass("secret-file:frontend/dist");
 }
 
 const sourceText = [backendRoot, frontendRoot, path.join(repoRoot, "docs")]

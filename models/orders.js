@@ -11,6 +11,16 @@ const orderItemSnapshotSchema = new mongoose.Schema(
     lineTotal: { type: Number, required: true },
     selectedColor: { type: String, default: null },
     selectedSize: { type: String, default: null },
+    merchantName: { type: String, default: null },
+  },
+  { _id: false }
+);
+
+const customerSnapshotSchema = new mongoose.Schema(
+  {
+    fullName: String,
+    email: String,
+    phone: String,
   },
   { _id: false }
 );
@@ -70,8 +80,17 @@ const shippingSnapshotSchema = new mongoose.Schema(
     governorate: String,
     city: String,
     originalFee: Number,
+    baseFee: Number,
+    quantityDiscountPercent: Number,
+    quantityDiscountAmount: Number,
     chargedFee: Number,
+    finalFee: Number,
     freeShippingApplied: Boolean,
+    thresholdFreeShippingApplied: Boolean,
+    quantityPromotionApplied: Boolean,
+    totalQuantity: Number,
+    nextQuantityThreshold: Number,
+    quantityNeededForNextThreshold: Number,
   },
   { _id: false }
 );
@@ -79,6 +98,7 @@ const shippingSnapshotSchema = new mongoose.Schema(
 const pricingSnapshotSchema = new mongoose.Schema(
   {
     currency: String,
+    totalQuantity: Number,
     merchandiseSubtotal: Number,
     discountTotal: Number,
     shippingFee: Number,
@@ -130,6 +150,10 @@ const orderSchema = new mongoose.Schema(
     },
     guestCustomer: {
       type: guestCustomerSchema,
+      default: null,
+    },
+    customerSnapshot: {
+      type: customerSnapshotSchema,
       default: null,
     },
     guestTrackingTokenHash: {

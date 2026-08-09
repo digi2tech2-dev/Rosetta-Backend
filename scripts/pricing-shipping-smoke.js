@@ -175,6 +175,7 @@ async function seed() {
     },
   ]);
   return {
+    category,
     admin,
     customer,
     other,
@@ -192,6 +193,14 @@ const address = {
   governorate: "Cairo",
   city: "Nasr City",
   street: "Test street",
+};
+
+const quantityAddress = {
+  fullName: "Phase2I Quantity Customer",
+  phone: "+201000000000",
+  governorate: "Quantity Gov",
+  city: "Quantity City",
+  street: "Quantity street",
 };
 
 async function addCart(token, productId, quantity = 1, body = {}) {
@@ -501,6 +510,172 @@ async function main() {
       assert(rule.status === 201, "shipping rule create failed");
       assert(off.status === 200 && off.body.rule.active === false, "shipping status update failed");
       assert(settings.status === 200 && settings.body.settings.defaultShippingFee === 25, "settings update failed");
+    });
+
+    await test("Quantity shipping promotion uses total units and server totals", async () => {
+      await shippingRuleModel.create({
+        name: `${TEST_PREFIX}quantity-city`,
+        governorate: quantityAddress.governorate,
+        city: quantityAddress.city,
+        fee: 90,
+        freeShippingThreshold: null,
+        active: true,
+        priority: 10,
+        createdBy: seeded.admin._id,
+      });
+      const qtyProduct = await productModel.create({
+        pName: `${TEST_PREFIX}quantity-product`,
+        pDescription: "Quantity discount product",
+        pPrice: 326.25,
+        pOffer: "0",
+        pQuantity: 20,
+        pSold: 0,
+        pCategory: seeded.category._id,
+        pImages: ["quantity-a.png", "quantity-b.png"],
+        pStatus: "Active",
+      });
+      const extraProducts = await productModel.create([1, 2, 3].map((index) => ({
+        pName: `${TEST_PREFIX}quantity-extra-${index}`,
+        pDescription: "Quantity discount extra product",
+        pPrice: 100,
+        pOffer: "0",
+        pQuantity: 10,
+        pSold: 0,
+        pCategory: seeded.category._id,
+        pImages: [`quantity-extra-${index}.png`],
+        pStatus: "Active",
+      })));
+      async function setCart(items) {
+        await cartModel.findOneAndUpdate(
+          { user: seeded.customer._id },
+          { user: seeded.customer._id, items },
+          { upsert: true, new: true }
+        );
+      }
+      async function quote(items, shippingAddress = quantityAddress) {
+        await setCart(items);
+        return request("/api/checkout/quote", {
+          method: "POST",
+          token: seeded.customerToken,
+          body: {
+            shippingAddress,
+            shippingFee: 1,
+            shippingDiscount: 999,
+            shippingDiscountPercent: 100,
+            total: 1,
+            shipping: { baseCost: 1, finalCost: 1 },
+          },
+        });
+      }
+
+      const qty3 = await quote([{ product: qtyProduct._id, quantity: 3 }]);
+      assert(qty3.status === 200, `qty3 quote failed: ${JSON.stringify(qty3.body)}`);
+      assert(qty3.body.quote.summary.shippingFee === 90, "qty3 should keep normal shipping");
+      assert(qty3.body.quote.shippingPromotion.discountPercent === 0, "qty3 discount percent mismatch");
+      assert(qty3.body.quote.shippingPromotion.nextThreshold === 4, "qty3 next threshold mismatch");
+      assert(qty3.body.quote.shippingPromotion.quantityNeededForNextThreshold === 1, "qty3 quantity needed mismatch");
+
+      const singleQty4 = await quote([{ product: qtyProduct._id, quantity: 4 }]);
+      assert(singleQty4.status === 200, `qty4 quote failed: ${JSON.stringify(singleQty4.body)}`);
+      assert(singleQty4.body.quote.summary.merchandiseSubtotal === 1305, "qty4 subtotal mismatch");
+      assert(singleQty4.body.quote.summary.shippingFee === 45, "one item quantity 4 should get half shipping");
+      assert(singleQty4.body.quote.summary.grandTotal === 1350, "qty4 grand total should use final shipping");
+      assert(singleQty4.body.quote.shipping.baseCost === 90, "qty4 base shipping mismatch");
+      assert(singleQty4.body.quote.shipping.discountPercent === 50, "qty4 shipping percent mismatch");
+      assert(singleQty4.body.quote.shipping.discountAmount === 45, "qty4 shipping discount mismatch");
+      assert(singleQty4.body.quote.shipping.finalCost === 45, "qty4 final shipping mismatch");
+      assert(singleQty4.body.quote.shippingPromotion.totalQuantity === 4, "qty4 totalQuantity mismatch");
+      assert(singleQty4.body.quote.shippingPromotion.nextThreshold === 6, "qty4 next threshold mismatch");
+      assert(singleQty4.body.quote.shippingPromotion.quantityNeededForNextThreshold === 2, "qty4 quantity needed mismatch");
+
+      const qty5 = await quote([{ product: qtyProduct._id, quantity: 5 }]);
+      assert(qty5.body.quote.summary.shippingFee === 45, "qty5 should get half shipping");
+      assert(qty5.body.quote.shippingPromotion.quantityNeededForNextThreshold === 1, "qty5 quantity needed mismatch");
+
+      const qty6 = await quote([{ product: qtyProduct._id, quantity: 6 }]);
+      assert(qty6.body.quote.summary.shippingFee === 0, "qty6 should get free shipping");
+      assert(qty6.body.quote.shippingPromotion.discountPercent === 100, "qty6 discount percent mismatch");
+      assert(qty6.body.quote.shippingPromotion.nextThreshold === null, "qty6 next threshold mismatch");
+
+      const fourDifferent = await quote([
+        { product: qtyProduct._id, quantity: 1 },
+        { product: extraProducts[0]._id, quantity: 1 },
+        { product: extraProducts[1]._id, quantity: 1 },
+        { product: extraProducts[2]._id, quantity: 1 },
+      ]);
+      assert(fourDifferent.body.quote.summary.shippingFee === 45, "four separate items should get half shipping");
+      assert(fourDifferent.body.quote.shippingPromotion.totalQuantity === 4, "four separate items totalQuantity mismatch");
+
+      const mixedQty4 = await quote([
+        { product: qtyProduct._id, quantity: 3 },
+        { product: extraProducts[0]._id, quantity: 1 },
+      ]);
+      assert(mixedQty4.body.quote.summary.shippingFee === 45, "mixed total quantity 4 should get half shipping");
+
+      const mixedQty6 = await quote([
+        { product: qtyProduct._id, quantity: 4 },
+        { product: extraProducts[0]._id, quantity: 2 },
+      ]);
+      assert(mixedQty6.body.quote.summary.shippingFee === 0, "mixed total quantity 6 should get free shipping");
+
+      const existingFree = await quote([{ product: qtyProduct._id, quantity: 4 }], address);
+      assert(existingFree.body.quote.summary.shippingFee === 0, "existing free shipping threshold should remain free");
+      assert(existingFree.body.quote.shipping.baseCost === 0, "quantity promotion should not increase existing free shipping");
+      assert(existingFree.body.quote.shipping.thresholdFreeShippingApplied === true, "threshold free shipping flag missing");
+
+      await setCart([{ product: qtyProduct._id, quantity: 4 }]);
+      const created = await request("/api/order/create-cod-order", {
+        method: "POST",
+        token: seeded.customerToken,
+        headers: { "Idempotency-Key": `${TEST_PREFIX}quantity-cod` },
+        body: {
+          shippingAddress: quantityAddress,
+          shippingFee: 1,
+          shippingDiscountPercent: 100,
+          total: 1,
+        },
+      });
+      assert(created.status === 201, `quantity COD failed: ${JSON.stringify(created.body)}`);
+      assert(created.body.order.total === 1350, "quantity COD total should ignore client total");
+      assert(created.body.order.shippingFee === 45, "quantity COD shipping should use final shipping");
+      assert(created.body.order.totalQuantity === 4, "quantity COD totalQuantity missing");
+      assert(created.body.order.shippingBaseCost === 90, "quantity COD base shipping missing");
+      assert(created.body.order.shippingDiscountPercent === 50, "quantity COD discount percent missing");
+      assert(created.body.order.shippingDiscountAmount === 45, "quantity COD discount amount missing");
+      assert(created.body.order.pricingSnapshot.shippingSnapshot.finalFee === 45, "quantity COD final snapshot missing");
+      assert(created.body.order.pricingSnapshot.shippingSnapshot.baseFee === 90, "quantity COD base snapshot missing");
+
+      const replay = await request("/api/order/create-cod-order", {
+        method: "POST",
+        token: seeded.customerToken,
+        headers: { "Idempotency-Key": `${TEST_PREFIX}quantity-cod` },
+        body: { shippingAddress: quantityAddress },
+      });
+      assert(replay.status === 200 && replay.body.reused === true, "quantity COD replay should be idempotent");
+      assert(replay.body.order.shippingFee === 45, "quantity COD replay shipping changed");
+
+      const adminOrder = await request(`/api/order/admin/orders/${created.body.order.id}`, { token: seeded.adminToken });
+      assert(adminOrder.status === 200, "admin order serialization failed");
+      assert(adminOrder.body.order.shippingDiscountPercent === 50, "admin order discount percent missing");
+      assert(adminOrder.body.order.finalShippingCost === 45, "admin order final shipping missing");
+
+      const guest = await request("/api/order/create-cod-order", {
+        method: "POST",
+        headers: { "Idempotency-Key": `${TEST_PREFIX}quantity-guest-cod` },
+        body: {
+          guestCustomer: { fullName: "Quantity Guest", phone: "01000000000" },
+          shippingAddress: quantityAddress,
+          cartItems: [{ productId: qtyProduct._id, quantity: 6 }],
+          shippingFee: 90,
+          shippingDiscountPercent: 0,
+          total: 9999,
+        },
+      });
+      assert(guest.status === 201, `guest quantity COD failed: ${JSON.stringify(guest.body)}`);
+      assert(guest.body.order.shippingFee === 0, "guest quantity COD should get free shipping");
+      assert(guest.body.order.total === 1957.5, "guest quantity COD total should use final shipping");
+      assert(guest.body.order.pricingSnapshot.totalQuantity === 6, "guest quantity COD snapshot total quantity missing");
+      assert(guest.body.guestTracking && guest.body.guestTracking.trackingToken, "guest quantity tracking token missing");
     });
 
     await test("Old orders without snapshots serialize safely", async () => {

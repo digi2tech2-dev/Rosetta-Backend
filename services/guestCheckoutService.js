@@ -25,7 +25,10 @@ function cleanGuestText(value, field, max, required = true) {
 }
 
 function normalizeEmail(value) {
-  const email = cleanGuestText(value, "email", 254).toLowerCase();
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return null;
+  }
+  const email = cleanGuestText(value, "email", 254, false).toLowerCase();
   if (!/^([a-zA-Z0-9_.+-])+@(([a-zA-Z0-9-])+\.)+([a-zA-Z0-9]{2,})+$/.test(email)) {
     throw httpError(400, "VALIDATION_ERROR", "email is invalid");
   }
@@ -87,7 +90,7 @@ function normalizeGuestCartItems(rawItems) {
 function guestIdentityHash(guest) {
   return crypto
     .createHmac("sha256", config.jwtSecret)
-    .update(`${guest.normalizedEmail}|${guest.normalizedPhone}`)
+    .update(`${guest.normalizedEmail || ""}|${guest.normalizedPhone}`)
     .digest("hex");
 }
 
@@ -121,10 +124,8 @@ function verifyTrackingToken(order, token) {
 
 async function assertGuestNotBlocked(guest) {
   const phoneNumber = Number(guest.normalizedPhone);
-  const filters = [
-    { email: guest.normalizedEmail },
-    { phone: guest.normalizedPhone },
-  ];
+  const filters = [{ phone: guest.normalizedPhone }];
+  if (guest.normalizedEmail) filters.unshift({ email: guest.normalizedEmail });
   if (Number.isFinite(phoneNumber)) filters.push({ phoneNumber });
   const blocked = await userModel.findOne({
     status: { $in: ["blocked", "disabled"] },

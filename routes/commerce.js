@@ -23,6 +23,11 @@ router.post(
   optionalCheckoutAuth,
   commerceController.quote.bind(commerceController)
 );
+router.post(
+  "/checkout/shipping-promotion",
+  checkoutLimiter,
+  commerceController.shippingPromotion.bind(commerceController)
+);
 
 router.get(
   "/admin/coupons",

@@ -27,6 +27,14 @@ function normalizeOptionalString(value, field, max = 255) {
   return text;
 }
 
+function normalizeMerchantName(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") {
+    throw httpError(400, "VALIDATION_ERROR", "pMerchantName must be plain text");
+  }
+  return normalizeOptionalString(value, "pMerchantName", 120);
+}
+
 function normalizeOptionalMoney(value, field = "pCost") {
   if (value === undefined || value === null || String(value).trim() === "") return null;
   const amount = Number(value);
@@ -190,14 +198,15 @@ function normalizeColorImageMap(value, colors, files = [], mainImageCount = 0) {
     if (rawValue.fileName) next.fileName = normalizeImageReference(rawValue.fileName);
     if (rawValue.image) next.fileName = normalizeImageReference(rawValue.image);
     if (rawValue.url) next.fileName = normalizeImageReference(rawValue.url);
-    if (Number.isInteger(rawValue.uploadIndex)) {
+    if (rawValue.uploadIndex !== undefined && rawValue.uploadIndex !== null) {
       const uploadIndex = Number(rawValue.uploadIndex);
       const file = files[uploadIndex];
-      if (uploadIndex < mainImageCount || !file) {
+      if (Number.isInteger(rawValue.uploadIndex) && uploadIndex >= mainImageCount && file) {
+        next.fileName = file.filename;
+        next.uploadIndex = uploadIndex;
+      } else if (!next.fileName) {
         throw httpError(400, "INVALID_COLOR_IMAGE", "Color image upload index is invalid");
       }
-      next.fileName = file.filename;
-      next.uploadIndex = uploadIndex;
     }
     if (next.fileName) output[color] = next;
   }
@@ -218,6 +227,7 @@ function normalizeProductPayload(body, options = {}) {
     pCategoryOrder: normalizeOptionalPositiveInteger(body.pCategoryOrder, "pCategoryOrder"),
     pBarcode: normalizeBarcode(body.pBarcode),
     pBrand: normalizeOptionalString(body.pBrand, "pBrand", 120),
+    pMerchantName: normalizeMerchantName(body.pMerchantName),
     pVideo: normalizeVideoUrl(body.pVideo),
     pColors: colors,
     pSizes: sizes,
@@ -235,6 +245,7 @@ module.exports = {
   normalizeBarcode,
   normalizeColorImageMap,
   normalizeObjectIdArray,
+  normalizeMerchantName,
   normalizeOptionalMoney,
   normalizeOptionalPositiveInteger,
   normalizeOptionalString,

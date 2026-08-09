@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const orderModel = require("../models/orders");
 const productModel = require("../models/products");
 const cartModel = require("../models/carts");
+const userModel = require("../models/users");
 const { config } = require("../config/appConfig");
 const { isValidObjectId } = require("../utils/validation");
 const { isProductActive } = require("./cartService");
@@ -148,7 +149,68 @@ function canonicalToLegacyStatus(status) {
   return map[status] || status;
 }
 
-function normalizeOrder(order) {
+function cleanSnapshotText(value, max = 120) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, max) : "";
+}
+
+function orderCustomer(doc, options = {}) {
+  const isGuest = doc.customerType === "guest";
+  const snapshot = doc.customerSnapshot || {};
+  const shipping = doc.shippingAddress || {};
+  const guest = doc.guestCustomer || {};
+  if (isGuest) {
+    const fullName = snapshot.fullName || guest.fullName || shipping.fullName || (options.admin ? "زائر" : "");
+    return {
+      name: fullName,
+      fullName,
+      email: options.admin ? guest.email || snapshot.email || "" : "",
+      phone: guest.phone || shipping.phone || (doc.phone ? String(doc.phone) : ""),
+      type: "guest",
+    };
+  }
+  const fullName = snapshot.fullName || shipping.fullName || (doc.user && doc.user.name) || "";
+  return {
+    name: fullName,
+    fullName,
+    email: snapshot.email || (doc.user && doc.user.email) || "",
+    phone: snapshot.phone || shipping.phone || (doc.user && (doc.user.phoneNumber || doc.user.phone)) || (doc.phone ? String(doc.phone) : ""),
+    type: "registered",
+  };
+}
+
+async function buildRegisteredCustomerSnapshot(userId, shippingAddress) {
+  const user = await userModel.findById(userId).select("name email phoneNumber phone").lean();
+  return {
+    fullName: cleanSnapshotText(shippingAddress.fullName || (user && user.name), 120),
+    email: cleanSnapshotText(user && user.email, 254),
+    phone: cleanSnapshotText(shippingAddress.phone || (user && (user.phone || user.phoneNumber)), 32),
+  };
+}
+
+function guestCustomerSnapshot(guestCustomer, shippingAddress) {
+  return {
+    fullName: cleanSnapshotText(guestCustomer.fullName || shippingAddress.fullName, 120),
+    email: cleanSnapshotText(guestCustomer.email, 254),
+    phone: cleanSnapshotText(guestCustomer.phone || shippingAddress.phone, 32),
+  };
+}
+
+function itemSnapshot(item) {
+  return {
+    product: item.productId,
+    name: item.name,
+    image: item.image,
+    unitPrice: item.unitPrice,
+    quantity: item.quantity,
+    lineTotal: item.lineTotal,
+    selectedColor: item.selectedColor || null,
+    selectedSize: item.selectedSize || null,
+    merchantName: item.merchantName || null,
+  };
+}
+
+function normalizeOrder(order, options = {}) {
   const doc = order && order.toObject ? order.toObject() : order;
   if (!doc) {
     return null;
@@ -165,6 +227,7 @@ function normalizeOrder(order) {
         lineTotal: item.lineTotal,
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        ...(options.admin ? { merchantName: item.merchantName || null, pMerchantName: item.merchantName || null } : {}),
       }))
     : (doc.allProduct || []).map((item) => ({
         productId: String(item.id && item.id._id ? item.id._id : item.id),
@@ -175,14 +238,29 @@ function normalizeOrder(order) {
         lineTotal: (item.quantitiy || 0) * (item.id && item.id.pPrice ? item.id.pPrice : 0),
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        ...(options.admin ? { merchantName: item.id && item.id.pMerchantName ? item.id.pMerchantName : null, pMerchantName: item.id && item.id.pMerchantName ? item.id.pMerchantName : null } : {}),
       }));
+  const customer = orderCustomer(doc, options);
+  const shippingSnapshot = doc.pricingSnapshot?.shippingSnapshot || {};
+  const totalQuantity = doc.pricingSnapshot?.totalQuantity ?? items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+  const finalShippingFee = doc.shippingFee ?? doc.pricingSnapshot?.shippingFee ?? shippingSnapshot.finalFee ?? shippingSnapshot.chargedFee ?? 0;
 
   return {
     _id: String(doc._id),
     id: String(doc._id),
     user: doc.user,
+    customer,
+    customerSnapshot: doc.customerSnapshot || null,
     customerType: doc.customerType || "registered",
-    guestCustomer: doc.customerType === "guest" ? publicGuestCustomer(doc.guestCustomer || {}) : null,
+    guestCustomer: doc.customerType === "guest"
+      ? options.admin
+        ? {
+            fullName: doc.guestCustomer?.fullName || "",
+            email: doc.guestCustomer?.email || "",
+            phone: doc.guestCustomer?.phone || "",
+          }
+        : publicGuestCustomer(doc.guestCustomer || {})
+      : null,
     orderNumber: doc.orderNumber || "",
     items,
     allProduct: doc.allProduct || [],
@@ -195,7 +273,12 @@ function normalizeOrder(order) {
     couponSnapshot: doc.pricingSnapshot?.couponSnapshot || null,
     firstOrderPromotionSnapshot: doc.pricingSnapshot?.firstOrderPromotionSnapshot || null,
     pricingSnapshot: doc.pricingSnapshot || null,
-    shippingFee: doc.shippingFee || 0,
+    totalQuantity,
+    shippingBaseCost: shippingSnapshot.baseFee ?? shippingSnapshot.chargedFee ?? finalShippingFee,
+    shippingDiscountPercent: shippingSnapshot.quantityDiscountPercent ?? 0,
+    shippingDiscountAmount: shippingSnapshot.quantityDiscountAmount ?? 0,
+    finalShippingCost: finalShippingFee,
+    shippingFee: finalShippingFee,
     total: doc.total !== undefined ? doc.total : doc.amount || 0,
     amount: doc.amount !== undefined ? doc.amount : doc.total || 0,
     currency: doc.currency || config.storeCurrency,
@@ -272,6 +355,7 @@ async function buildCartOrder(userId) {
       productId: product._id,
       name: product.pName,
       image: Array.isArray(product.pImages) ? product.pImages[0] : null,
+      merchantName: product.pMerchantName || null,
       unitPrice: fromCents(unitPriceCents),
       quantity,
       lineTotal: fromCents(lineTotalCents),
@@ -356,6 +440,7 @@ async function createCodOrder(userId, body, idempotencyHeader) {
     couponCode,
   });
   const orderId = new mongoose.Types.ObjectId();
+  const customerSnapshot = await buildRegisteredCustomerSnapshot(userId, checkout.shippingAddress);
   let redemption = null;
   const deducted = [];
   try {
@@ -366,20 +451,12 @@ async function createCodOrder(userId, body, idempotencyHeader) {
       amount: checkout.pricingSnapshot.discountTotal,
     });
     deducted.push(...(await deductStock(checkout.items)));
-    const snapshots = checkout.items.map((item) => ({
-      product: item.productId,
-      name: item.name,
-      image: item.image,
-      unitPrice: item.unitPrice,
-      quantity: item.quantity,
-      lineTotal: item.lineTotal,
-      selectedColor: item.selectedColor || null,
-      selectedSize: item.selectedSize || null,
-    }));
+    const snapshots = checkout.items.map(itemSnapshot);
     const order = await orderModel.create({
       _id: orderId,
       user: userId,
       customerType: "registered",
+      customerSnapshot,
       orderNumber: generateOrderNumber(),
       items: snapshots,
       allProduct: checkout.items.map((item) => ({
@@ -461,6 +538,7 @@ async function createGuestCodOrder(body, idempotencyHeader) {
     couponCode,
   });
   const orderId = new mongoose.Types.ObjectId();
+  const customerSnapshot = guestCustomerSnapshot(guestCustomer, shippingAddress);
   const tracking = generateTrackingToken();
   let redemption = null;
   const deducted = [];
@@ -472,20 +550,12 @@ async function createGuestCodOrder(body, idempotencyHeader) {
       amount: checkout.pricingSnapshot.discountTotal,
     });
     deducted.push(...(await deductStock(checkout.items)));
-    const snapshots = checkout.items.map((item) => ({
-      product: item.productId,
-      name: item.name,
-      image: item.image,
-      unitPrice: item.unitPrice,
-      quantity: item.quantity,
-      lineTotal: item.lineTotal,
-      selectedColor: item.selectedColor || null,
-      selectedSize: item.selectedSize || null,
-    }));
+    const snapshots = checkout.items.map(itemSnapshot);
     const order = await orderModel.create({
       _id: orderId,
       customerType: "guest",
       guestCustomer,
+      customerSnapshot,
       guestTrackingTokenHash: tracking.hash,
       guestTrackingTokenCreatedAt: new Date(),
       orderNumber: generateOrderNumber(),
@@ -559,7 +629,7 @@ async function listMyOrders(userId, query) {
       .limit(page.limit),
     orderModel.countDocuments({ user: userId }),
   ]);
-  return { orders: orders.map(normalizeOrder), pagination: { page: page.page, limit: page.limit, total } };
+  return { orders: orders.map((order) => normalizeOrder(order)), pagination: { page: page.page, limit: page.limit, total } };
 }
 
 async function getMyOrder(userId, orderId) {
@@ -599,14 +669,14 @@ async function listAdminOrders(query) {
   const [orders, total] = await Promise.all([
     orderModel
       .find(filter)
-      .populate("allProduct.id", "pName pImages pPrice")
+      .populate("allProduct.id", "pName pImages pPrice pMerchantName")
       .populate("user", "name email phoneNumber")
       .sort({ createdAt: -1, _id: -1 })
       .skip(page.skip)
       .limit(page.limit),
     orderModel.countDocuments(filter),
   ]);
-  return { orders: orders.map(normalizeOrder), pagination: { page: page.page, limit: page.limit, total } };
+  return { orders: orders.map((order) => normalizeOrder(order, { admin: true })), pagination: { page: page.page, limit: page.limit, total } };
 }
 
 async function getAdminOrder(orderId) {
@@ -615,15 +685,15 @@ async function getAdminOrder(orderId) {
   }
   const order = await orderModel
     .findById(orderId)
-    .populate("allProduct.id", "pName pImages pPrice")
+    .populate("allProduct.id", "pName pImages pPrice pMerchantName")
     .populate("user", "name email phoneNumber");
   if (!order) {
     throw httpError(404, "NOT_FOUND", "Order not found");
   }
-  return normalizeOrder(order);
+  return normalizeOrder(order, { admin: true });
 }
 
-async function updateStatus(orderId, nextStatus, adminUserId) {
+async function updateStatus(orderId, nextStatus, adminUserId, options = {}) {
   if (!isValidObjectId(orderId)) {
     throw httpError(400, "VALIDATION_ERROR", "orderId must be valid");
   }
@@ -636,7 +706,7 @@ async function updateStatus(orderId, nextStatus, adminUserId) {
   }
   const current = order.orderStatus || legacyStatusToCanonical(order.status);
   if (current === nextStatus) {
-    return normalizeOrder(order);
+    return normalizeOrder(order, options);
   }
   if (!(ALLOWED_TRANSITIONS[current] || []).includes(nextStatus)) {
     throw httpError(409, "CONFLICT", `Cannot transition order from ${current} to ${nextStatus}`);
@@ -669,7 +739,7 @@ async function updateStatus(orderId, nextStatus, adminUserId) {
     changedBy: adminUserId,
   });
   await order.save();
-  return normalizeOrder(order);
+  return normalizeOrder(order, options);
 }
 
 async function getGuestOrderStatus({ orderNumber, trackingToken }) {
@@ -721,7 +791,10 @@ module.exports = {
   getAdminOrder,
   getGuestOrderStatus,
   getMyOrder,
+  buildRegisteredCustomerSnapshot,
+  guestCustomerSnapshot,
   hashPayload,
+  itemSnapshot,
   listAdminOrders,
   listMyOrders,
   normalizeOrder,

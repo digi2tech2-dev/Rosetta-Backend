@@ -3,6 +3,7 @@ const productModel = require("../models/products");
 const { config } = require("../config/appConfig");
 const { isValidObjectId } = require("../utils/validation");
 const {
+  calculateQuantityShippingPromotionMetadata,
   fromCents,
   getEffectiveProductPriceCents,
   moneySummary,
@@ -100,6 +101,7 @@ async function normalizeCart(cart) {
     id: safeCart._id ? String(safeCart._id) : null,
     items,
     summary: moneySummary(subtotalCents, itemCount),
+    shippingPromotion: calculateQuantityShippingPromotionMetadata(itemCount),
   };
 }
 

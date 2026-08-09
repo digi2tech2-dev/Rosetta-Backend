@@ -2,7 +2,14 @@ const couponModel = require("../models/coupons");
 const couponRedemptionModel = require("../models/couponRedemptions");
 const shippingRuleModel = require("../models/shippingRules");
 const commerceSettingsModel = require("../models/commerceSettings");
-const { calculateCheckoutPricing, calculateGuestCheckoutPricing, normalizeCode, money } = require("../services/pricingService");
+const {
+  calculateCheckoutPricing,
+  calculateGuestCheckoutPricing,
+  calculateQuantityShippingPromotionMetadata,
+  normalizeCode,
+  money,
+} = require("../services/pricingService");
+const { normalizeGuestCartItems } = require("../services/guestCheckoutService");
 const { isValidObjectId, pickAllowed } = require("../utils/validation");
 
 function sendError(res, err) {
@@ -270,6 +277,19 @@ function serializeSettings(settings) {
 }
 
 class CommerceController {
+  async shippingPromotion(req, res) {
+    try {
+      const cartItems = normalizeGuestCartItems(req.body.cartItems || []);
+      const totalQuantity = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+      return res.json({
+        success: true,
+        shippingPromotion: calculateQuantityShippingPromotionMetadata(totalQuantity),
+      });
+    } catch (err) {
+      return sendError(res, err);
+    }
+  }
+
   async quote(req, res) {
     try {
       if (req.auth && Number(req.auth.role) !== 0) {
@@ -305,6 +325,7 @@ class CommerceController {
           summary: quote.summary,
           discount: quote.discount,
           shipping: quote.shipping,
+          shippingPromotion: quote.shippingPromotion,
           firstOrderEligible: quote.firstOrderEligible,
         },
       });
