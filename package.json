@@ -18,6 +18,7 @@
     "customer:smoke": "node scripts/customer-auth-smoke.js",
     "google:smoke": "node scripts/google-auth-smoke.js",
     "pricing:smoke": "node scripts/pricing-shipping-smoke.js",
+    "bundle:smoke": "node scripts/bundle-offers-smoke.js",
     "shipping:unit": "node scripts/shipping-promotion-unit.js",
     "paymob:smoke": "node scripts/paymob-payment-smoke.js",
     "paymob:validation": "node scripts/paymob-validation-smoke.js",

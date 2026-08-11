@@ -11,6 +11,13 @@ const orderItemSnapshotSchema = new mongoose.Schema(
     lineTotal: { type: Number, required: true },
     selectedColor: { type: String, default: null },
     selectedSize: { type: String, default: null },
+    bundleOfferId: { type: String, default: null },
+    bundleGroupId: { type: String, default: null },
+    bundleRole: {
+      type: String,
+      enum: ["primary", "additional", null],
+      default: null,
+    },
     merchantName: { type: String, default: null },
   },
   { _id: false }
@@ -95,11 +102,43 @@ const shippingSnapshotSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const bundleSnapshotSchema = new mongoose.Schema(
+  {
+    bundleOfferId: String,
+    bundleGroupId: String,
+    primaryProductId: String,
+    additionalProductId: String,
+    quantity: Number,
+    regularSubtotal: Number,
+    bundleSubtotal: Number,
+    bundleDiscount: Number,
+    bundlePrice: Number,
+    regularTotal: Number,
+    memberProducts: [
+      {
+        productId: String,
+        name: String,
+        unitPrice: Number,
+        quantity: Number,
+        selectedColor: { type: String, default: null },
+        selectedSize: { type: String, default: null },
+        bundleRole: String,
+      },
+    ],
+  },
+  { _id: false }
+);
+
 const pricingSnapshotSchema = new mongoose.Schema(
   {
     currency: String,
     totalQuantity: Number,
+    normalSubtotal: Number,
     merchandiseSubtotal: Number,
+    bundleDiscountTotal: {
+      type: Number,
+      default: 0,
+    },
     discountTotal: Number,
     shippingFee: Number,
     grandTotal: Number,
@@ -110,6 +149,10 @@ const pricingSnapshotSchema = new mongoose.Schema(
     },
     couponSnapshot: { type: couponSnapshotSchema, default: null },
     firstOrderPromotionSnapshot: { type: firstOrderPromotionSnapshotSchema, default: null },
+    bundleSnapshots: {
+      type: [bundleSnapshotSchema],
+      default: [],
+    },
     shippingSnapshot: { type: shippingSnapshotSchema, default: null },
     pricingVersion: String,
   },

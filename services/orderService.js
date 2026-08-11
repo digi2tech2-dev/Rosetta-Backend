@@ -206,6 +206,9 @@ function itemSnapshot(item) {
     lineTotal: item.lineTotal,
     selectedColor: item.selectedColor || null,
     selectedSize: item.selectedSize || null,
+    bundleOfferId: item.bundleOfferId || null,
+    bundleGroupId: item.bundleGroupId || null,
+    bundleRole: item.bundleRole || null,
     merchantName: item.merchantName || null,
   };
 }
@@ -227,6 +230,9 @@ function normalizeOrder(order, options = {}) {
         lineTotal: item.lineTotal,
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        bundleOfferId: item.bundleOfferId || null,
+        bundleGroupId: item.bundleGroupId || null,
+        bundleRole: item.bundleRole || null,
         ...(options.admin ? { merchantName: item.merchantName || null, pMerchantName: item.merchantName || null } : {}),
       }))
     : (doc.allProduct || []).map((item) => ({
@@ -238,6 +244,9 @@ function normalizeOrder(order, options = {}) {
         lineTotal: (item.quantitiy || 0) * (item.id && item.id.pPrice ? item.id.pPrice : 0),
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        bundleOfferId: item.bundleOfferId || null,
+        bundleGroupId: item.bundleGroupId || null,
+        bundleRole: item.bundleRole || null,
         ...(options.admin ? { merchantName: item.id && item.id.pMerchantName ? item.id.pMerchantName : null, pMerchantName: item.id && item.id.pMerchantName ? item.id.pMerchantName : null } : {}),
       }));
   const customer = orderCustomer(doc, options);
@@ -272,6 +281,8 @@ function normalizeOrder(order, options = {}) {
     couponCode: doc.couponCode || doc.pricingSnapshot?.couponSnapshot?.code || "",
     couponSnapshot: doc.pricingSnapshot?.couponSnapshot || null,
     firstOrderPromotionSnapshot: doc.pricingSnapshot?.firstOrderPromotionSnapshot || null,
+    bundleDiscountTotal: doc.pricingSnapshot?.bundleDiscountTotal || 0,
+    bundleSnapshots: doc.pricingSnapshot?.bundleSnapshots || [],
     pricingSnapshot: doc.pricingSnapshot || null,
     totalQuantity,
     shippingBaseCost: shippingSnapshot.baseFee ?? shippingSnapshot.chargedFee ?? finalShippingFee,
@@ -464,6 +475,9 @@ async function createCodOrder(userId, body, idempotencyHeader) {
         quantitiy: item.quantity,
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        bundleOfferId: item.bundleOfferId || null,
+        bundleGroupId: item.bundleGroupId || null,
+        bundleRole: item.bundleRole || null,
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
@@ -565,6 +579,9 @@ async function createGuestCodOrder(body, idempotencyHeader) {
         quantitiy: item.quantity,
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        bundleOfferId: item.bundleOfferId || null,
+        bundleGroupId: item.bundleGroupId || null,
+        bundleRole: item.bundleRole || null,
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,

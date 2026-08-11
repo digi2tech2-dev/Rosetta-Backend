@@ -27,6 +27,20 @@ const cartItemSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    bundleOffer: {
+      type: ObjectId,
+      ref: "bundleOffers",
+      default: null,
+    },
+    bundleGroupId: {
+      type: String,
+      default: null,
+    },
+    bundleRole: {
+      type: String,
+      enum: ["primary", "additional", null],
+      default: null,
+    },
   },
   { _id: false }
 );
@@ -47,7 +61,8 @@ const cartSchema = new mongoose.Schema(
         validator(items) {
           const seen = new Set();
           for (const item of items || []) {
-            const id = `${String(item.product)}::${item.selectedColor || ""}::${item.selectedSize || ""}`.toLowerCase();
+            const group = item.bundleGroupId || "normal";
+            const id = `${String(item.product)}::${item.selectedColor || ""}::${item.selectedSize || ""}::${group}`.toLowerCase();
             if (seen.has(id)) {
               return false;
             }

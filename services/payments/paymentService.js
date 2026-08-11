@@ -122,6 +122,9 @@ function requestFingerprint({ method, shippingAddress, savedAddressId, couponCod
       quantity: item.quantity,
       selectedColor: item.selectedColor || null,
       selectedSize: item.selectedSize || null,
+      bundleOfferId: item.bundleOfferId || null,
+      bundleGroupId: item.bundleGroupId || null,
+      bundleRole: item.bundleRole || null,
       unitPriceCents: item.unitPriceCents,
       lineTotalCents: item.lineTotalCents,
     })),
@@ -142,16 +145,61 @@ function snapshots(checkout) {
     lineTotal: item.lineTotal,
     selectedColor: item.selectedColor || null,
     selectedSize: item.selectedSize || null,
+    bundleOfferId: item.bundleOfferId || null,
+    bundleGroupId: item.bundleGroupId || null,
+    bundleRole: item.bundleRole || null,
     merchantName: item.merchantName || null,
   }));
 }
 
+function providerItemName(value, fallback) {
+  const name = String(value || "").trim();
+  return (name || fallback).slice(0, 120);
+}
+
+function sumProviderItems(items) {
+  return items.reduce((total, item) => total + amountMinor(fromCents(item.amountMinor)), 0);
+}
+
 function providerItems(checkout) {
-  return checkout.items.map((item) => ({
-    name: item.name,
-    amountMinor: item.lineTotalCents,
-    quantity: item.quantity,
-  }));
+  const expectedCents = amountMinor(checkout && checkout.summary && checkout.summary.grandTotal);
+  const shippingCents = amountMinor(checkout && checkout.summary && checkout.summary.shippingFee);
+  const paidMerchandiseCents = Math.max(0, expectedCents - shippingCents);
+  const productLines = (checkout.items || [])
+    .map((item) => ({
+      name: providerItemName(
+        Number(item.quantity) > 1 ? `${item.name} x${item.quantity}` : item.name,
+        "Rosetta order item"
+      ),
+      baseCents: Math.max(0, Number(item.lineTotalCents) || 0),
+    }))
+    .filter((item) => item.baseCents > 0);
+
+  const rows = [];
+  const baseTotalCents = productLines.reduce((total, item) => total + item.baseCents, 0);
+  if (paidMerchandiseCents > 0 && baseTotalCents > 0) {
+    let allocatedCents = 0;
+    productLines.forEach((item, index) => {
+      const isLast = index === productLines.length - 1;
+      const amount = isLast
+        ? paidMerchandiseCents - allocatedCents
+        : Math.floor((paidMerchandiseCents * item.baseCents) / baseTotalCents);
+      allocatedCents += amount;
+      if (amount > 0) rows.push({ name: item.name, amountMinor: amount, quantity: 1 });
+    });
+  } else if (paidMerchandiseCents > 0) {
+    rows.push({ name: "Rosetta merchandise", amountMinor: paidMerchandiseCents, quantity: 1 });
+  }
+
+  if (shippingCents > 0) {
+    rows.push({ name: "Shipping", amountMinor: shippingCents, quantity: 1 });
+  }
+
+  const actualCents = sumProviderItems(rows);
+  if (rows.length && actualCents !== expectedCents) {
+    rows[rows.length - 1].amountMinor = Math.max(0, rows[rows.length - 1].amountMinor + (expectedCents - actualCents));
+  }
+  return rows;
 }
 
 function safeAttemptResponse(attempt, order, guestTracking) {
@@ -194,6 +242,9 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
       quantity: item.quantity,
       selectedColor: item.selectedColor || null,
       selectedSize: item.selectedSize || null,
+      bundleOfferId: item.bundleOfferId || null,
+      bundleGroupId: item.bundleGroupId || null,
+      bundleRole: item.bundleRole || null,
       unitPriceCents: amountMinor(item.unitPrice),
       lineTotalCents: amountMinor(item.lineTotal),
     }));
@@ -251,6 +302,9 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
         quantitiy: item.quantity,
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        bundleOfferId: item.bundleOfferId || null,
+        bundleGroupId: item.bundleGroupId || null,
+        bundleRole: item.bundleRole || null,
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
@@ -367,6 +421,9 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
       quantity: item.quantity,
       selectedColor: item.selectedColor || null,
       selectedSize: item.selectedSize || null,
+      bundleOfferId: item.bundleOfferId || null,
+      bundleGroupId: item.bundleGroupId || null,
+      bundleRole: item.bundleRole || null,
       unitPriceCents: amountMinor(item.unitPrice),
       lineTotalCents: amountMinor(item.lineTotal),
     }));
@@ -433,6 +490,9 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
         quantitiy: item.quantity,
         selectedColor: item.selectedColor || null,
         selectedSize: item.selectedSize || null,
+        bundleOfferId: item.bundleOfferId || null,
+        bundleGroupId: item.bundleGroupId || null,
+        bundleRole: item.bundleRole || null,
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
@@ -788,5 +848,6 @@ module.exports = {
   getGuestPaymentStatus,
   getPaymentStatus,
   processPaymobWebhook,
+  buildProviderItemsForCheckout: providerItems,
   timingSafeEqualHex,
 };

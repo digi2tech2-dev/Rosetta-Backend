@@ -11,6 +11,7 @@ const commerceSettingsModel = require("../models/commerceSettings");
 const { isValidObjectId } = require("../utils/validation");
 const { validateProductOptions } = require("./productOptionService");
 const { normalizeGuestCartItems } = require("./guestCheckoutService");
+const { calculateBundlePricingForItems } = require("./bundleOfferService");
 
 const QUALIFYING_FIRST_ORDER_STATUSES = [
   "pending",
@@ -211,13 +212,24 @@ async function getCommerceSettings() {
   };
 }
 
-function serializeMoneySummary({ itemCount, merchandiseSubtotalCents, discountCents, shippingCents, currency }) {
+function serializeMoneySummary({
+  itemCount,
+  merchandiseSubtotalCents,
+  discountCents,
+  shippingCents,
+  currency,
+  normalSubtotalCents,
+  bundleDiscountCents = 0,
+}) {
   const grandTotalCents = Math.max(0, merchandiseSubtotalCents - discountCents + shippingCents);
   return {
     itemCount,
     totalQuantity: itemCount,
     subtotal: fromCents(merchandiseSubtotalCents),
     merchandiseSubtotal: fromCents(merchandiseSubtotalCents),
+    normalSubtotal: fromCents(normalSubtotalCents === undefined ? merchandiseSubtotalCents : normalSubtotalCents),
+    bundleDiscount: fromCents(bundleDiscountCents),
+    otherDiscount: fromCents(discountCents),
     discountTotal: fromCents(discountCents),
     shippingFee: fromCents(shippingCents),
     total: fromCents(grandTotalCents),
@@ -277,6 +289,9 @@ async function buildServerCart(customerId) {
       quantity,
       selectedColor: options.selectedColor,
       selectedSize: options.selectedSize,
+      bundleOfferId: cartItem.bundleOffer ? String(cartItem.bundleOffer) : null,
+      bundleGroupId: cartItem.bundleGroupId || null,
+      bundleRole: cartItem.bundleRole || null,
       available: true,
       stock: Number(product.pQuantity) || 0,
     });
@@ -330,6 +345,9 @@ async function buildGuestCart(rawItems) {
       quantity: cartItem.quantity,
       selectedColor: options.selectedColor,
       selectedSize: options.selectedSize,
+      bundleOfferId: cartItem.bundleOfferId || null,
+      bundleGroupId: cartItem.bundleGroupId || null,
+      bundleRole: cartItem.bundleRole || null,
       available: true,
       stock: Number(product.pQuantity) || 0,
     });
@@ -495,22 +513,26 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
   ]);
   const address = await resolveShippingAddress(customerId, { shippingAddress, savedAddressId });
   const isFirstOrder = await firstOrderEligible(customerId);
+  const bundlePricing = await calculateBundlePricingForItems(cartData.items);
+  const discountedSubtotalCents = Math.max(0, cartData.subtotalCents - bundlePricing.bundleDiscountTotalCents);
   const couponDiscount = await resolveCouponDiscount({
     customerId,
     customerType: "registered",
     code: couponCode,
-    subtotalCents: cartData.subtotalCents,
+    subtotalCents: discountedSubtotalCents,
     now,
     isFirstOrder,
   });
   const firstOrderDiscount = couponDiscount
     ? null
-    : resolveFirstOrderPromotion({ settings, subtotalCents: cartData.subtotalCents, isFirstOrder });
+    : resolveFirstOrderPromotion({ settings, subtotalCents: discountedSubtotalCents, isFirstOrder });
   const discount = couponDiscount || firstOrderDiscount || { source: "none", discountCents: 0 };
-  const shipping = await resolveShipping({ settings, address, subtotalCents: cartData.subtotalCents, totalQuantity: cartData.itemCount });
+  const shipping = await resolveShipping({ settings, address, subtotalCents: discountedSubtotalCents, totalQuantity: cartData.itemCount });
   const summary = serializeMoneySummary({
     itemCount: cartData.itemCount,
-    merchandiseSubtotalCents: cartData.subtotalCents,
+    merchandiseSubtotalCents: discountedSubtotalCents,
+    normalSubtotalCents: cartData.subtotalCents,
+    bundleDiscountCents: bundlePricing.bundleDiscountTotalCents,
     discountCents: discount.discountCents,
     shippingCents: shipping.finalFeeCents,
     currency: settings.currency || config.storeCurrency,
@@ -550,15 +572,18 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
     pricingSnapshot: {
       currency: summary.currency,
       totalQuantity: summary.totalQuantity,
+      normalSubtotal: summary.normalSubtotal,
       merchandiseSubtotal: summary.merchandiseSubtotal,
+      bundleDiscountTotal: summary.bundleDiscount,
       discountTotal: summary.discountTotal,
       shippingFee: summary.shippingFee,
       grandTotal: summary.grandTotal,
       discountSource: discount.source,
       couponSnapshot: couponDiscount ? couponDiscount.snapshot : null,
       firstOrderPromotionSnapshot: firstOrderDiscount ? firstOrderDiscount.snapshot : null,
+      bundleSnapshots: bundlePricing.bundleSnapshots,
       shippingSnapshot: shipping.snapshot,
-      pricingVersion: "2Q",
+      pricingVersion: "2QB",
     },
     coupon: couponDiscount ? couponDiscount.coupon : null,
   };
@@ -570,19 +595,23 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
     buildGuestCart(cartItems),
   ]);
   const address = await resolveShippingAddress(null, { shippingAddress });
+  const bundlePricing = await calculateBundlePricingForItems(cartData.items);
+  const discountedSubtotalCents = Math.max(0, cartData.subtotalCents - bundlePricing.bundleDiscountTotalCents);
   const couponDiscount = await resolveCouponDiscount({
     customerId: null,
     customerType: "guest",
     code: couponCode,
-    subtotalCents: cartData.subtotalCents,
+    subtotalCents: discountedSubtotalCents,
     now,
     isFirstOrder: false,
   });
   const discount = couponDiscount || { source: "none", discountCents: 0 };
-  const shipping = await resolveShipping({ settings, address, subtotalCents: cartData.subtotalCents, totalQuantity: cartData.itemCount });
+  const shipping = await resolveShipping({ settings, address, subtotalCents: discountedSubtotalCents, totalQuantity: cartData.itemCount });
   const summary = serializeMoneySummary({
     itemCount: cartData.itemCount,
-    merchandiseSubtotalCents: cartData.subtotalCents,
+    merchandiseSubtotalCents: discountedSubtotalCents,
+    normalSubtotalCents: cartData.subtotalCents,
+    bundleDiscountCents: bundlePricing.bundleDiscountTotalCents,
     discountCents: discount.discountCents,
     shippingCents: shipping.finalFeeCents,
     currency: settings.currency || config.storeCurrency,
@@ -622,15 +651,18 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
     pricingSnapshot: {
       currency: summary.currency,
       totalQuantity: summary.totalQuantity,
+      normalSubtotal: summary.normalSubtotal,
       merchandiseSubtotal: summary.merchandiseSubtotal,
+      bundleDiscountTotal: summary.bundleDiscount,
       discountTotal: summary.discountTotal,
       shippingFee: summary.shippingFee,
       grandTotal: summary.grandTotal,
       discountSource: discount.source,
       couponSnapshot: couponDiscount ? couponDiscount.snapshot : null,
       firstOrderPromotionSnapshot: null,
+      bundleSnapshots: bundlePricing.bundleSnapshots,
       shippingSnapshot: shipping.snapshot,
-      pricingVersion: "2Q",
+      pricingVersion: "2QB",
     },
     coupon: couponDiscount ? couponDiscount.coupon : null,
   };

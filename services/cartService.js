@@ -9,6 +9,11 @@ const {
   moneySummary,
 } = require("./pricingService");
 const { optionIdentity, validateProductOptions } = require("./productOptionService");
+const {
+  calculateBundlePricingForItems,
+  publicBundleGroupId,
+  validateBundleCartRequest,
+} = require("./bundleOfferService");
 
 function httpError(status, code, message, extra) {
   return Object.assign(new Error(message), { status, code, ...extra });
@@ -35,6 +40,10 @@ function validateProductId(productId) {
 
 function isProductActive(product) {
   return product && String(product.pStatus || "").toLowerCase() === "active";
+}
+
+function cartBundleGroup(item) {
+  return item.bundleGroupId ? String(item.bundleGroupId) : "";
 }
 
 async function loadActiveProduct(productId) {
@@ -89,6 +98,9 @@ async function normalizeCart(cart) {
       quantity,
       selectedColor: item.selectedColor || null,
       selectedSize: item.selectedSize || null,
+      bundleOfferId: item.bundleOffer ? String(item.bundleOffer) : null,
+      bundleGroupId: item.bundleGroupId || null,
+      bundleRole: item.bundleRole || null,
       stock: product ? Number(product.pQuantity) || 0 : 0,
       unitPrice: fromCents(unitPriceCents),
       lineTotal: fromCents(lineTotalCents),
@@ -97,11 +109,23 @@ async function normalizeCart(cart) {
     };
   });
 
+  let bundlePricing = { bundleDiscountTotal: 0, bundleSnapshots: [] };
+  try {
+    bundlePricing = await calculateBundlePricingForItems(items);
+  } catch {
+    bundlePricing = { bundleDiscountTotal: 0, bundleSnapshots: [] };
+  }
+  const discountedSubtotalCents = Math.max(0, subtotalCents - Math.round(bundlePricing.bundleDiscountTotal * 100));
+  const summary = moneySummary(discountedSubtotalCents, itemCount);
+  summary.normalSubtotal = fromCents(subtotalCents);
+  summary.bundleDiscount = bundlePricing.bundleDiscountTotal;
+
   return {
     id: safeCart._id ? String(safeCart._id) : null,
     items,
-    summary: moneySummary(subtotalCents, itemCount),
+    summary,
     shippingPromotion: calculateQuantityShippingPromotionMetadata(itemCount),
+    bundleSnapshots: bundlePricing.bundleSnapshots,
   };
 }
 
@@ -110,10 +134,11 @@ async function getCartForUser(userId) {
   return normalizeCart(cart);
 }
 
-function sameCartLine(item, productId, selectedColor, selectedSize) {
+function sameCartLine(item, productId, selectedColor, selectedSize, bundleGroupId = null) {
   return (
     String(item.product) === String(productId) &&
-    optionIdentity(item.selectedColor, item.selectedSize) === optionIdentity(selectedColor, selectedSize)
+    optionIdentity(item.selectedColor, item.selectedSize) === optionIdentity(selectedColor, selectedSize) &&
+    cartBundleGroup(item) === String(bundleGroupId || "")
   );
 }
 
@@ -127,14 +152,26 @@ function productQuantityInCart(cart, productId, exceptItem) {
 function upsertCartItem(cart, productId, quantity, options = {}) {
   const selectedColor = options.selectedColor || null;
   const selectedSize = options.selectedSize || null;
-  const existing = cart.items.find((item) => sameCartLine(item, productId, selectedColor, selectedSize));
+  const bundleGroupId = options.bundleGroupId || null;
+  const existing = cart.items.find((item) => sameCartLine(item, productId, selectedColor, selectedSize, bundleGroupId));
   if (existing) {
     existing.quantity = quantity;
+    if (options.bundleOffer !== undefined) existing.bundleOffer = options.bundleOffer;
+    if (options.bundleGroupId !== undefined) existing.bundleGroupId = options.bundleGroupId;
+    if (options.bundleRole !== undefined) existing.bundleRole = options.bundleRole;
   } else {
     if (cart.items.length >= config.maxCartItems) {
       throw httpError(409, "CONFLICT", `Cart cannot contain more than ${config.maxCartItems} items`);
     }
-    cart.items.push({ product: productId, quantity, selectedColor, selectedSize });
+    cart.items.push({
+      product: productId,
+      quantity,
+      selectedColor,
+      selectedSize,
+      bundleOffer: options.bundleOffer || null,
+      bundleGroupId,
+      bundleRole: options.bundleRole || null,
+    });
   }
 }
 
@@ -167,14 +204,33 @@ async function updateItem(userId, productId, quantityValue, optionValues = {}) {
     selectedSize: optionValues.selectedSize,
   });
   const cart = await getOrCreateCart(userId);
-  const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize));
+  const bundleGroupId = optionValues.bundleGroupId || null;
+  const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize, bundleGroupId));
   if (!existing) {
     throw httpError(404, "NOT_FOUND", "Cart item not found");
   }
-  if (quantity + productQuantityInCart(cart, product._id, existing) > product.pQuantity) {
-    throw httpError(409, "CONFLICT", "Requested quantity exceeds available stock");
+  if (existing.bundleGroupId) {
+    const groupItems = cart.items.filter((item) => item.bundleGroupId === existing.bundleGroupId);
+    const groupProducts = await productModel.find({ _id: { $in: groupItems.map((item) => item.product) } });
+    const groupProductMap = new Map(groupProducts.map((groupProduct) => [String(groupProduct._id), groupProduct]));
+    for (const groupItem of groupItems) {
+      const groupProduct = groupProductMap.get(String(groupItem.product));
+      if (!groupProduct || !isProductActive(groupProduct)) {
+        throw httpError(409, "PRODUCT_UNAVAILABLE", "A bundle item is no longer available");
+      }
+      if (quantity + productQuantityInCart(cart, groupProduct._id, groupItem) > groupProduct.pQuantity) {
+        throw httpError(409, "CONFLICT", "Requested quantity exceeds available stock");
+      }
+    }
+    groupItems.forEach((item) => {
+      item.quantity = quantity;
+    });
+  } else {
+    if (quantity + productQuantityInCart(cart, product._id, existing) > product.pQuantity) {
+      throw httpError(409, "CONFLICT", "Requested quantity exceeds available stock");
+    }
+    existing.quantity = quantity;
   }
-  existing.quantity = quantity;
   await cart.save();
   return normalizeCart(cart);
 }
@@ -182,16 +238,60 @@ async function updateItem(userId, productId, quantityValue, optionValues = {}) {
 async function removeItem(userId, productId, optionValues = {}) {
   validateProductId(productId);
   const cart = await getOrCreateCart(userId);
+  const bundleGroupId = optionValues.bundleGroupId || null;
   const hasOptions = optionValues.selectedColor !== undefined || optionValues.selectedSize !== undefined;
   const matchingItems = cart.items.filter((item) => String(item.product) === String(productId));
-  if (!hasOptions && matchingItems.length > 1) {
+  if (!bundleGroupId && !hasOptions && matchingItems.length > 1) {
     throw httpError(409, "CART_ITEM_AMBIGUOUS", "Selected cart item options are required");
   }
+  const removed = cart.items.find((item) => (
+    String(item.product) === String(productId) &&
+    (!bundleGroupId || item.bundleGroupId === bundleGroupId) &&
+    (!hasOptions || optionIdentity(item.selectedColor, item.selectedSize) === optionIdentity(optionValues.selectedColor, optionValues.selectedSize))
+  ));
+  const removedGroupId = removed && removed.bundleGroupId ? removed.bundleGroupId : "";
   cart.items = cart.items.filter((item) => {
     if (String(item.product) !== String(productId)) return true;
+    if (bundleGroupId && item.bundleGroupId !== bundleGroupId) return true;
     if (!hasOptions) return false;
     return optionIdentity(item.selectedColor, item.selectedSize) !== optionIdentity(optionValues.selectedColor, optionValues.selectedSize);
   });
+  if (removedGroupId) {
+    cart.items.forEach((item) => {
+      if (item.bundleGroupId === removedGroupId) {
+        item.bundleOffer = null;
+        item.bundleGroupId = null;
+        item.bundleRole = null;
+      }
+    });
+  }
+  await cart.save();
+  return normalizeCart(cart);
+}
+
+async function addBundle(userId, payload = {}) {
+  const validated = await validateBundleCartRequest({
+    bundleOfferId: payload.bundleOfferId,
+    quantity: payload.quantity,
+    selections: payload.selections || {},
+  });
+  const cart = await getOrCreateCart(userId);
+  const groupId = publicBundleGroupId();
+  for (const member of validated.members) {
+    const requestedTotal = productQuantityInCart(cart, member.product._id) + validated.quantity;
+    if (requestedTotal > member.product.pQuantity) {
+      throw httpError(409, "CONFLICT", "Requested bundle quantity exceeds available stock");
+    }
+  }
+  for (const member of validated.members) {
+    upsertCartItem(cart, member.product._id, validated.quantity, {
+      selectedColor: member.options.selectedColor,
+      selectedSize: member.options.selectedSize,
+      bundleOffer: validated.offer._id,
+      bundleGroupId: groupId,
+      bundleRole: member.role,
+    });
+  }
   await cart.save();
   return normalizeCart(cart);
 }
@@ -226,11 +326,14 @@ async function syncGuestCart(userId, itemsValue) {
       warnings.push({ productId: String(productId), code: "INVALID_QUANTITY" });
       continue;
     }
-    const key = `${String(productId)}::${String(raw.selectedColor || "")}::${String(raw.selectedSize || "")}`.toLowerCase();
+    const key = `${String(productId)}::${String(raw.selectedColor || "")}::${String(raw.selectedSize || "")}::${String(raw.bundleGroupId || "")}`.toLowerCase();
     const existing = merged.get(key) || {
       productId: String(productId),
       selectedColor: raw.selectedColor,
       selectedSize: raw.selectedSize,
+      bundleOfferId: raw.bundleOfferId || raw.bundleOffer || null,
+      bundleGroupId: raw.bundleGroupId || null,
+      bundleRole: raw.bundleRole || null,
       quantity: 0,
     };
     existing.quantity += quantity;
@@ -264,7 +367,7 @@ async function syncGuestCart(userId, itemsValue) {
     if (capped < requested) {
       warnings.push({ productId: mergedItem.productId, code: "QUANTITY_REDUCED", quantity: capped });
     }
-    const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize));
+    const existing = cart.items.find((item) => sameCartLine(item, product._id, options.selectedColor, options.selectedSize, mergedItem.bundleGroupId || null));
     const availableForLine = Math.max(0, (Number(product.pQuantity) || 0) - productQuantityInCart(cart, product._id, existing));
     if (availableForLine < 1) {
       warnings.push({ productId: mergedItem.productId, code: "OUT_OF_STOCK" });
@@ -278,13 +381,19 @@ async function syncGuestCart(userId, itemsValue) {
     if (nextQuantity < (existing ? Number(existing.quantity) : 0) + requested) {
       warnings.push({ productId: mergedItem.productId, code: "QUANTITY_REDUCED", quantity: nextQuantity });
     }
-    upsertCartItem(cart, product._id, nextQuantity, options);
+    upsertCartItem(cart, product._id, nextQuantity, {
+      ...options,
+      bundleOffer: mergedItem.bundleOfferId || null,
+      bundleGroupId: mergedItem.bundleGroupId || null,
+      bundleRole: mergedItem.bundleRole || null,
+    });
   }
   await cart.save();
   return { cart: await normalizeCart(cart), warnings };
 }
 
 module.exports = {
+  addBundle,
   addItem,
   clearCart,
   getCartForUser,

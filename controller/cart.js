@@ -44,6 +44,7 @@ class CartController {
         {
           selectedColor: req.body.selectedColor,
           selectedSize: req.body.selectedSize,
+          bundleGroupId: req.body.bundleGroupId,
         }
       );
       return res.json({ success: true, cart });
@@ -56,9 +57,11 @@ class CartController {
     try {
       const selectedColor = req.query.selectedColor ?? req.body.selectedColor;
       const selectedSize = req.query.selectedSize ?? req.body.selectedSize;
+      const bundleGroupId = req.query.bundleGroupId ?? req.body.bundleGroupId;
       const cart = await cartService.removeItem(req.auth.userId, req.params.productId, {
         selectedColor,
         selectedSize,
+        bundleGroupId,
       });
       return res.json({ success: true, cart });
     } catch (err) {
@@ -79,6 +82,15 @@ class CartController {
     try {
       const result = await cartService.syncGuestCart(req.auth.userId, req.body.items);
       return res.json({ success: true, cart: result.cart, warnings: result.warnings });
+    } catch (err) {
+      return sendError(res, err);
+    }
+  }
+
+  async addBundle(req, res) {
+    try {
+      const cart = await cartService.addBundle(req.auth.userId, req.body || {});
+      return res.status(201).json({ success: true, cart });
     } catch (err) {
       return sendError(res, err);
     }

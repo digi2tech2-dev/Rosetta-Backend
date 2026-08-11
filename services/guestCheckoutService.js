@@ -83,6 +83,13 @@ function normalizeGuestCartItems(rawItems) {
       quantity,
       selectedColor: cleanGuestText(value.selectedColor, "selectedColor", 80, false) || null,
       selectedSize: cleanGuestText(value.selectedSize, "selectedSize", 80, false) || null,
+      bundleOfferId: value.bundleOfferId || value.bundleOffer
+        ? cleanGuestText(value.bundleOfferId || value.bundleOffer, "bundleOfferId", 80, false) || null
+        : null,
+      bundleGroupId: value.bundleGroupId
+        ? cleanGuestText(value.bundleGroupId, "bundleGroupId", 120, false) || null
+        : null,
+      bundleRole: ["primary", "additional"].includes(value.bundleRole) ? value.bundleRole : null,
     };
   });
 }

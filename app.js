@@ -25,6 +25,7 @@ const usersRouter = require("./routes/users");
 const customerAccountsRouter = require("./routes/customerAccounts");
 const commerceRouter = require("./routes/commerce");
 const paymentsRouter = require("./routes/payments");
+const bundleOffersRouter = require("./routes/bundleOffers");
 const customizeRouter = require("./routes/customize");
 const CreateAllFolder = require("./config/uploadFolderCreateScript");
 
@@ -91,6 +92,7 @@ app.use("/api/order", orderRouter);
 app.use("/api", customerAccountsRouter);
 app.use("/api", commerceRouter);
 app.use("/api", paymentsRouter);
+app.use("/api", bundleOffersRouter);
 app.use("/api/customize", customizeRouter);
 
 app.use("/api", (req, res) => {

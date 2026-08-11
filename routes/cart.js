@@ -7,6 +7,7 @@ router.use(requireAuth, requireRole("customer", "admin"));
 
 router.get("/", cartController.getCart);
 router.post("/items", cartController.addItem);
+router.post("/bundles", cartController.addBundle);
 router.patch("/items/:productId", cartController.updateItem);
 router.delete("/items/:productId", cartController.removeItem);
 router.delete("/", cartController.clearCart);
