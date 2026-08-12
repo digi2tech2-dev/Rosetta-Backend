@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const {
   calculateQuantityShippingDiscount,
   calculateQuantityShippingDiscountCents,
+  calculateQuantityShippingPromotionMetadata,
 } = require("../services/pricingService");
 const {
   normalizeOrder,
@@ -39,13 +40,13 @@ function expectCents(totalQuantity, baseShippingCents, expected) {
 
 function testThresholds() {
   [
-    [1, 0, 0, 90, 4, 3],
-    [2, 0, 0, 90, 4, 2],
-    [3, 0, 0, 90, 4, 1],
-    [4, 50, 45, 45, 6, 2],
-    [5, 50, 45, 45, 6, 1],
+    [1, 0, 0, 90, 3, 2],
+    [2, 0, 0, 90, 3, 1],
+    [3, 50, 45, 45, 5, 2],
+    [4, 50, 45, 45, 5, 1],
+    [5, 100, 90, 0, null, 0],
     [6, 100, 90, 0, null, 0],
-    [7, 100, 90, 0, null, 0],
+    [10, 100, 90, 0, null, 0],
     [20, 100, 90, 0, null, 0],
   ].forEach(([quantity, discountPercent, discountAmount, finalShipping, nextThreshold, quantityNeededForNextThreshold]) => {
     expectDiscount(quantity, 90, {
@@ -60,38 +61,39 @@ function testThresholds() {
 
 function testExampleTotals() {
   const subtotal = 1305;
-  assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 3, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1395);
+  assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 2, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1395);
+  assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 3, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1350);
   assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 4, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1350);
-  assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 5, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1350);
+  assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 5, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1305);
   assert.strictEqual(subtotal + calculateQuantityShippingDiscount({ totalQuantity: 6, baseShippingCost: 90 }).shippingAfterQuantityDiscount, 1305);
 }
 
 function testBaseShippingEdgeCases() {
-  expectDiscount(4, 0, {
+  expectDiscount(3, 0, {
     discountPercent: 50,
     discountAmount: 0,
     finalShipping: 0,
-    nextThreshold: 6,
+    nextThreshold: 5,
     quantityNeededForNextThreshold: 2,
   });
-  expectDiscount(6, 0, {
+  expectDiscount(5, 0, {
     discountPercent: 100,
     discountAmount: 0,
     finalShipping: 0,
     nextThreshold: null,
     quantityNeededForNextThreshold: 0,
   });
-  expectCents(4, 9075, {
+  expectCents(3, 9075, {
     discountPercent: 50,
     discountAmountCents: 4538,
     finalShippingCents: 4537,
   });
-  expectCents(6, 9075, {
+  expectCents(5, 9075, {
     discountPercent: 100,
     discountAmountCents: 9075,
     finalShippingCents: 0,
   });
-  expectCents(4, -500, {
+  expectCents(3, -500, {
     discountPercent: 50,
     discountAmountCents: 0,
     finalShippingCents: 0,
@@ -99,16 +101,59 @@ function testBaseShippingEdgeCases() {
 }
 
 function testQuantityCombinations() {
-  const oneItemQuantityFour = [{ quantity: 4 }];
-  const fourItemsQuantityOne = [{ quantity: 1 }, { quantity: 1 }, { quantity: 1 }, { quantity: 1 }];
-  const mixedQuantityFour = [{ quantity: 1 }, { quantity: 3 }];
-  const mixedQuantitySix = [{ quantity: 2 }, { quantity: 1 }, { quantity: 3 }];
+  const oneItemQuantityThree = [{ quantity: 3 }];
+  const oneItemQuantityFive = [{ quantity: 5 }];
+  const threeItemsQuantityOne = [{ quantity: 1 }, { quantity: 1 }, { quantity: 1 }];
+  const mixedQuantityThree = [{ quantity: 1 }, { quantity: 2 }];
+  const mixedQuantityFive = [{ quantity: 2 }, { quantity: 1 }, { quantity: 2 }];
+  const bundleMembersQuantityThree = [
+    { quantity: 1, bundleGroupId: "bundle-a", bundleRole: "primary" },
+    { quantity: 1, bundleGroupId: "bundle-a", bundleRole: "additional" },
+    { quantity: 1 },
+  ];
+  const bundleMembersQuantityFive = [
+    { quantity: 1, bundleGroupId: "bundle-a", bundleRole: "primary" },
+    { quantity: 1, bundleGroupId: "bundle-a", bundleRole: "additional" },
+    { quantity: 1, bundleGroupId: "bundle-b", bundleRole: "primary" },
+    { quantity: 1, bundleGroupId: "bundle-b", bundleRole: "additional" },
+    { quantity: 1 },
+  ];
   const sum = (items) => items.reduce((total, item) => total + item.quantity, 0);
 
-  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(oneItemQuantityFour), baseShippingCost: 90 }).discountPercent, 50);
-  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(fourItemsQuantityOne), baseShippingCost: 90 }).discountPercent, 50);
-  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(mixedQuantityFour), baseShippingCost: 90 }).shippingAfterQuantityDiscount, 45);
-  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(mixedQuantitySix), baseShippingCost: 90 }).shippingAfterQuantityDiscount, 0);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(oneItemQuantityThree), baseShippingCost: 90 }).discountPercent, 50);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(oneItemQuantityFive), baseShippingCost: 90 }).discountPercent, 100);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(threeItemsQuantityOne), baseShippingCost: 90 }).discountPercent, 50);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(mixedQuantityThree), baseShippingCost: 90 }).shippingAfterQuantityDiscount, 45);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(mixedQuantityFive), baseShippingCost: 90 }).shippingAfterQuantityDiscount, 0);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(bundleMembersQuantityThree), baseShippingCost: 90 }).discountPercent, 50);
+  assert.strictEqual(calculateQuantityShippingDiscount({ totalQuantity: sum(bundleMembersQuantityFive), baseShippingCost: 90 }).shippingAfterQuantityDiscount, 0);
+}
+
+function testPromotionMetadata() {
+  assert.deepStrictEqual(calculateQuantityShippingPromotionMetadata(2), {
+    type: "quantity",
+    totalQuantity: 2,
+    discountPercent: 0,
+    discountAmount: 0,
+    nextThreshold: 3,
+    quantityNeededForNextThreshold: 1,
+  });
+  assert.deepStrictEqual(calculateQuantityShippingPromotionMetadata(3), {
+    type: "quantity",
+    totalQuantity: 3,
+    discountPercent: 50,
+    discountAmount: 0,
+    nextThreshold: 5,
+    quantityNeededForNextThreshold: 2,
+  });
+  assert.deepStrictEqual(calculateQuantityShippingPromotionMetadata(5), {
+    type: "quantity",
+    totalQuantity: 5,
+    discountPercent: 100,
+    discountAmount: 0,
+    nextThreshold: null,
+    quantityNeededForNextThreshold: 0,
+  });
 }
 
 function testInvalidGuestQuantityRejected() {
@@ -171,8 +216,8 @@ function testOrderSerialization() {
         thresholdFreeShippingApplied: false,
         quantityPromotionApplied: true,
         totalQuantity: 4,
-        nextQuantityThreshold: 6,
-        quantityNeededForNextThreshold: 2,
+        nextQuantityThreshold: 5,
+        quantityNeededForNextThreshold: 1,
       },
     },
   }, { admin: true });
@@ -213,6 +258,7 @@ testThresholds();
 testExampleTotals();
 testBaseShippingEdgeCases();
 testQuantityCombinations();
+testPromotionMetadata();
 testInvalidGuestQuantityRejected();
 testOrderSerialization();
 

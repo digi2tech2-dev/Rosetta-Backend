@@ -10,6 +10,7 @@ const orderModel = require("../models/orders");
 const couponModel = require("../models/coupons");
 const paymentAttemptModel = require("../models/paymentAttempts");
 const commerceSettingsModel = require("../models/commerceSettings");
+const shippingRuleModel = require("../models/shippingRules");
 const paymentService = require("../services/payments/paymentService");
 const orderService = require("../services/orderService");
 
@@ -28,6 +29,7 @@ async function cleanup() {
   await orderModel.deleteMany({ user: { $in: userIds } });
   await cartModel.deleteMany({ user: { $in: userIds } });
   await couponModel.deleteMany({ code: new RegExp(`^${TEST_PREFIX.toUpperCase()}`) });
+  await shippingRuleModel.deleteMany({ name: new RegExp(`^${TEST_PREFIX}`) });
   await productModel.deleteMany({ _id: { $in: products.map((product) => product._id) } });
   await categoryModel.deleteMany({ cName: new RegExp(`^${TEST_PREFIX}`) });
   await userModel.deleteMany({ _id: { $in: userIds } });
@@ -92,10 +94,10 @@ const shippingAddress = {
   street: "Test Street",
 };
 
-async function createAttempt(method = "card", key = `${TEST_PREFIX}${method}-${Date.now()}`) {
+async function createAttempt(method = "card", key = `${TEST_PREFIX}${method}-${Date.now()}`, options = {}) {
   const customer = await seedCustomer(`${method}-${Math.random().toString(36).slice(2)}`);
-  const product = await seedProduct();
-  await putCart(customer, product, 1);
+  const product = await seedProduct(options.stock || 8, options.price || 100);
+  await putCart(customer, product, options.quantity || 1);
   const result = await paymentService.createPaymobIntention(
     String(customer._id),
     { paymentMethod: method, shippingAddress, couponCode: "" },
@@ -186,6 +188,32 @@ async function main() {
   await test("Server amount and currency are used", async () => {
     assert(card.attempt.amountMinor === 10000, "amount was not minor-unit server price");
     assert(card.attempt.currency === "EGP", "currency mismatch");
+  });
+  await test("Paymob amount uses quantity shipping promotion totals", async () => {
+    const rule = await shippingRuleModel.create({
+      name: `${TEST_PREFIX}quantity-paymob`,
+      governorate: shippingAddress.governorate,
+      city: shippingAddress.city,
+      fee: 90,
+      freeShippingThreshold: null,
+      active: true,
+      priority: 100,
+    });
+    try {
+      const half = await createAttempt("card", `${TEST_PREFIX}quantity-half`, { quantity: 3, price: 100 });
+      assert(half.order.shippingFee === 45, "Paymob qty3 order should use half shipping");
+      assert(half.order.total === 345, "Paymob qty3 grand total should include half shipping");
+      assert(half.attempt.amountMinor === 34500, "Paymob qty3 attempt amount should use half shipping grand total");
+      assert(half.order.pricingSnapshot.shippingSnapshot.quantityDiscountPercent === 50, "Paymob qty3 discount percent mismatch");
+
+      const free = await createAttempt("wallet", `${TEST_PREFIX}quantity-free`, { quantity: 5, price: 40 });
+      assert(free.order.shippingFee === 0, "Paymob qty5 order should use free shipping");
+      assert(free.order.total === 200, "Paymob qty5 grand total should use zero shipping");
+      assert(free.attempt.amountMinor === 20000, "Paymob qty5 attempt amount should use free shipping grand total");
+      assert(free.order.pricingSnapshot.shippingSnapshot.quantityDiscountPercent === 100, "Paymob qty5 discount percent mismatch");
+    } finally {
+      await shippingRuleModel.deleteOne({ _id: rule._id });
+    }
   });
   await test("No card or wallet credentials are persisted", async () => {
     const raw = JSON.stringify(await paymentAttemptModel.findById(card.attempt._id).lean());

@@ -568,12 +568,27 @@ async function main() {
         });
       }
 
+      const qty1 = await quote([{ product: qtyProduct._id, quantity: 1 }]);
+      assert(qty1.status === 200, `qty1 quote failed: ${JSON.stringify(qty1.body)}`);
+      assert(qty1.body.quote.summary.shippingFee === 90, "qty1 should keep normal shipping");
+      assert(qty1.body.quote.shippingPromotion.discountPercent === 0, "qty1 discount percent mismatch");
+      assert(qty1.body.quote.shippingPromotion.nextThreshold === 3, "qty1 next threshold mismatch");
+      assert(qty1.body.quote.shippingPromotion.quantityNeededForNextThreshold === 2, "qty1 quantity needed mismatch");
+
+      const qty2 = await quote([{ product: qtyProduct._id, quantity: 2 }]);
+      assert(qty2.status === 200, `qty2 quote failed: ${JSON.stringify(qty2.body)}`);
+      assert(qty2.body.quote.summary.shippingFee === 90, "qty2 should keep normal shipping");
+      assert(qty2.body.quote.shippingPromotion.discountPercent === 0, "qty2 discount percent mismatch");
+      assert(qty2.body.quote.shippingPromotion.nextThreshold === 3, "qty2 next threshold mismatch");
+      assert(qty2.body.quote.shippingPromotion.quantityNeededForNextThreshold === 1, "qty2 quantity needed mismatch");
+
       const qty3 = await quote([{ product: qtyProduct._id, quantity: 3 }]);
       assert(qty3.status === 200, `qty3 quote failed: ${JSON.stringify(qty3.body)}`);
-      assert(qty3.body.quote.summary.shippingFee === 90, "qty3 should keep normal shipping");
-      assert(qty3.body.quote.shippingPromotion.discountPercent === 0, "qty3 discount percent mismatch");
-      assert(qty3.body.quote.shippingPromotion.nextThreshold === 4, "qty3 next threshold mismatch");
-      assert(qty3.body.quote.shippingPromotion.quantityNeededForNextThreshold === 1, "qty3 quantity needed mismatch");
+      assert(qty3.body.quote.summary.shippingFee === 45, "qty3 should get half shipping");
+      assert(qty3.body.quote.summary.grandTotal === 1023.75, "qty3 grand total should use half shipping");
+      assert(qty3.body.quote.shippingPromotion.discountPercent === 50, "qty3 discount percent mismatch");
+      assert(qty3.body.quote.shippingPromotion.nextThreshold === 5, "qty3 next threshold mismatch");
+      assert(qty3.body.quote.shippingPromotion.quantityNeededForNextThreshold === 2, "qty3 quantity needed mismatch");
 
       const singleQty4 = await quote([{ product: qtyProduct._id, quantity: 4 }]);
       assert(singleQty4.status === 200, `qty4 quote failed: ${JSON.stringify(singleQty4.body)}`);
@@ -585,45 +600,66 @@ async function main() {
       assert(singleQty4.body.quote.shipping.discountAmount === 45, "qty4 shipping discount mismatch");
       assert(singleQty4.body.quote.shipping.finalCost === 45, "qty4 final shipping mismatch");
       assert(singleQty4.body.quote.shippingPromotion.totalQuantity === 4, "qty4 totalQuantity mismatch");
-      assert(singleQty4.body.quote.shippingPromotion.nextThreshold === 6, "qty4 next threshold mismatch");
-      assert(singleQty4.body.quote.shippingPromotion.quantityNeededForNextThreshold === 2, "qty4 quantity needed mismatch");
+      assert(singleQty4.body.quote.shippingPromotion.nextThreshold === 5, "qty4 next threshold mismatch");
+      assert(singleQty4.body.quote.shippingPromotion.quantityNeededForNextThreshold === 1, "qty4 quantity needed mismatch");
 
       const qty5 = await quote([{ product: qtyProduct._id, quantity: 5 }]);
-      assert(qty5.body.quote.summary.shippingFee === 45, "qty5 should get half shipping");
-      assert(qty5.body.quote.shippingPromotion.quantityNeededForNextThreshold === 1, "qty5 quantity needed mismatch");
+      assert(qty5.body.quote.summary.shippingFee === 0, "qty5 should get free shipping");
+      assert(qty5.body.quote.shippingPromotion.discountPercent === 100, "qty5 discount percent mismatch");
+      assert(qty5.body.quote.shippingPromotion.nextThreshold === null, "qty5 next threshold mismatch");
+      assert(qty5.body.quote.shippingPromotion.quantityNeededForNextThreshold === 0, "qty5 quantity needed mismatch");
 
       const qty6 = await quote([{ product: qtyProduct._id, quantity: 6 }]);
       assert(qty6.body.quote.summary.shippingFee === 0, "qty6 should get free shipping");
       assert(qty6.body.quote.shippingPromotion.discountPercent === 100, "qty6 discount percent mismatch");
       assert(qty6.body.quote.shippingPromotion.nextThreshold === null, "qty6 next threshold mismatch");
 
-      const fourDifferent = await quote([
+      const qty10 = await quote([{ product: qtyProduct._id, quantity: 10 }]);
+      assert(qty10.body.quote.summary.shippingFee === 0, "qty10 should get free shipping");
+      assert(qty10.body.quote.shippingPromotion.discountPercent === 100, "qty10 discount percent mismatch");
+
+      const threeDifferent = await quote([
         { product: qtyProduct._id, quantity: 1 },
         { product: extraProducts[0]._id, quantity: 1 },
         { product: extraProducts[1]._id, quantity: 1 },
-        { product: extraProducts[2]._id, quantity: 1 },
       ]);
-      assert(fourDifferent.body.quote.summary.shippingFee === 45, "four separate items should get half shipping");
-      assert(fourDifferent.body.quote.shippingPromotion.totalQuantity === 4, "four separate items totalQuantity mismatch");
+      assert(threeDifferent.body.quote.summary.shippingFee === 45, "three separate items should get half shipping");
+      assert(threeDifferent.body.quote.shippingPromotion.totalQuantity === 3, "three separate items totalQuantity mismatch");
 
-      const mixedQty4 = await quote([
-        { product: qtyProduct._id, quantity: 3 },
+      const mixedQty3 = await quote([
+        { product: qtyProduct._id, quantity: 2 },
         { product: extraProducts[0]._id, quantity: 1 },
       ]);
-      assert(mixedQty4.body.quote.summary.shippingFee === 45, "mixed total quantity 4 should get half shipping");
+      assert(mixedQty3.body.quote.summary.shippingFee === 45, "mixed total quantity 3 should get half shipping");
 
-      const mixedQty6 = await quote([
-        { product: qtyProduct._id, quantity: 4 },
+      const mixedQty5 = await quote([
+        { product: qtyProduct._id, quantity: 3 },
         { product: extraProducts[0]._id, quantity: 2 },
       ]);
-      assert(mixedQty6.body.quote.summary.shippingFee === 0, "mixed total quantity 6 should get free shipping");
+      assert(mixedQty5.body.quote.summary.shippingFee === 0, "mixed total quantity 5 should get free shipping");
 
-      const existingFree = await quote([{ product: qtyProduct._id, quantity: 4 }], address);
+      const guestQuote = await request("/api/checkout/quote", {
+        method: "POST",
+        body: {
+          shippingAddress: quantityAddress,
+          cartItems: [
+            { productId: qtyProduct._id, quantity: 2 },
+            { productId: extraProducts[0]._id, quantity: 1 },
+          ],
+          shippingFee: 999,
+          total: 1,
+        },
+      });
+      assert(guestQuote.status === 200, `guest qty3 quote failed: ${JSON.stringify(guestQuote.body)}`);
+      assert(guestQuote.body.quote.summary.shippingFee === 45, "guest qty3 quote should get half shipping");
+      assert(guestQuote.body.quote.shippingPromotion.totalQuantity === 3, "guest qty3 totalQuantity mismatch");
+
+      const existingFree = await quote([{ product: qtyProduct._id, quantity: 3 }], address);
       assert(existingFree.body.quote.summary.shippingFee === 0, "existing free shipping threshold should remain free");
       assert(existingFree.body.quote.shipping.baseCost === 0, "quantity promotion should not increase existing free shipping");
       assert(existingFree.body.quote.shipping.thresholdFreeShippingApplied === true, "threshold free shipping flag missing");
 
-      await setCart([{ product: qtyProduct._id, quantity: 4 }]);
+      await setCart([{ product: qtyProduct._id, quantity: 3 }]);
       const created = await request("/api/order/create-cod-order", {
         method: "POST",
         token: seeded.customerToken,
@@ -636,9 +672,9 @@ async function main() {
         },
       });
       assert(created.status === 201, `quantity COD failed: ${JSON.stringify(created.body)}`);
-      assert(created.body.order.total === 1350, "quantity COD total should ignore client total");
+      assert(created.body.order.total === 1023.75, "quantity COD total should ignore client total");
       assert(created.body.order.shippingFee === 45, "quantity COD shipping should use final shipping");
-      assert(created.body.order.totalQuantity === 4, "quantity COD totalQuantity missing");
+      assert(created.body.order.totalQuantity === 3, "quantity COD totalQuantity missing");
       assert(created.body.order.shippingBaseCost === 90, "quantity COD base shipping missing");
       assert(created.body.order.shippingDiscountPercent === 50, "quantity COD discount percent missing");
       assert(created.body.order.shippingDiscountAmount === 45, "quantity COD discount amount missing");

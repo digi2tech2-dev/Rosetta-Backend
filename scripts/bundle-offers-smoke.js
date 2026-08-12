@@ -4,7 +4,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || "bundle-offers-smoke-secret";
 process.env.PASSWORD_RESET_PEPPER = process.env.PASSWORD_RESET_PEPPER || "bundle-offers-smoke-pepper";
 process.env.STORE_CURRENCY = process.env.STORE_CURRENCY || "EGP";
 process.env.SHIPPING_FLAT_RATE = process.env.SHIPPING_FLAT_RATE || "100";
-process.env.FREE_SHIPPING_MINIMUM = process.env.FREE_SHIPPING_MINIMUM || "320";
+process.env.FREE_SHIPPING_MINIMUM = process.env.FREE_SHIPPING_MINIMUM || "0";
 
 const assert = require("assert");
 const mongoose = require("mongoose");
@@ -84,6 +84,7 @@ async function main() {
   });
   const primary = await product({ pName: "Primary", pPrice: 145 });
   const additional = await product({ pName: "Additional", pPrice: 199, pColors: ["Black"] });
+  const normal = await product({ pName: "Normal", pPrice: 10 });
 
   const offer = await createBundleOffer({
     primaryProductId: primary._id,
@@ -157,6 +158,18 @@ async function main() {
   assert.strictEqual(guestQuote.summary.totalQuantity, 2);
   assert.strictEqual(guestQuote.summary.shippingFee, 100);
 
+  const bundlePlusNormalQuote = await calculateGuestCheckoutPricing({
+    cartItems: [
+      { productId: primary._id, quantity: 1, bundleOfferId: offer.id, bundleGroupId: "guest-bundle-plus-1", bundleRole: "primary" },
+      { productId: additional._id, quantity: 1, selectedColor: "Black", bundleOfferId: offer.id, bundleGroupId: "guest-bundle-plus-1", bundleRole: "additional" },
+      { productId: normal._id, quantity: 1 },
+    ],
+    shippingAddress: address,
+  });
+  assert.strictEqual(bundlePlusNormalQuote.summary.totalQuantity, 3);
+  assert.strictEqual(bundlePlusNormalQuote.shippingPromotion.discountPercent, 50);
+  assert.strictEqual(bundlePlusNormalQuote.summary.shippingFee, 50);
+
   await couponModel.create({ code: "BUNDLE10", type: "fixed", value: 10, active: true });
   const couponQuote = await calculateGuestCheckoutPricing({
     cartItems: [
@@ -172,6 +185,18 @@ async function main() {
   assert.strictEqual(couponQuote.discount.source, "coupon");
   assert.strictEqual(couponQuote.summary.discountTotal, 10);
   assert.strictEqual(couponQuote.shippingPromotion.discountPercent, 50);
+
+  const twoBundlesPlusNormalQuote = await calculateGuestCheckoutPricing({
+    cartItems: [
+      { productId: primary._id, quantity: 2, bundleOfferId: offer.id, bundleGroupId: "guest-bundle-plus-2", bundleRole: "primary" },
+      { productId: additional._id, quantity: 2, selectedColor: "Black", bundleOfferId: offer.id, bundleGroupId: "guest-bundle-plus-2", bundleRole: "additional" },
+      { productId: normal._id, quantity: 1 },
+    ],
+    shippingAddress: address,
+  });
+  assert.strictEqual(twoBundlesPlusNormalQuote.summary.totalQuantity, 5);
+  assert.strictEqual(twoBundlesPlusNormalQuote.shippingPromotion.discountPercent, 100);
+  assert.strictEqual(twoBundlesPlusNormalQuote.summary.shippingFee, 0);
 
   await assertRejectsCode(() => calculateGuestCheckoutPricing({
     cartItems: [

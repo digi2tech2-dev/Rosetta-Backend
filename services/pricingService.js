@@ -50,15 +50,15 @@ function money(value) {
 
 function quantityShippingDiscountPercent(totalQuantity) {
   const quantity = Number(totalQuantity) || 0;
-  if (quantity >= 6) return 100;
-  if (quantity >= 4) return 50;
+  if (quantity >= 5) return 100;
+  if (quantity >= 3) return 50;
   return 0;
 }
 
 function nextQuantityShippingThreshold(totalQuantity) {
   const quantity = Number(totalQuantity) || 0;
-  if (quantity >= 6) return null;
-  return quantity >= 4 ? 6 : 4;
+  if (quantity >= 5) return null;
+  return quantity >= 3 ? 5 : 3;
 }
 
 function calculateQuantityShippingDiscountCents({ totalQuantity, baseShippingCents }) {
