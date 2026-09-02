@@ -25,6 +25,8 @@
     "guest:smoke": "node scripts/guest-checkout-smoke.js",
     "stabilization:smoke": "node scripts/stabilization-smoke.js",
     "payment:expire": "node scripts/payment-expiry-sweep.js",
+    "whatsapp:dispatch": "node scripts/notification-dispatch.js",
+    "whatsapp:unit": "node scripts/whatsapp-notification-unit.js",
     "database:readiness": "node scripts/database-readiness.js",
     "admin:create": "node scripts/create-admin.js",
     "release:check": "node scripts/release-readiness.js"

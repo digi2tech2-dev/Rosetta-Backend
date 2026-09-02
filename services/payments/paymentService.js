@@ -23,6 +23,7 @@ const {
 } = require("../guestCheckoutService");
 const { PaymobAdapter, buildCheckoutUrl } = require("./paymobAdapter");
 const { FakePaymobAdapter } = require("./fakePaymobAdapter");
+const { enqueueOrderCreated, enqueueOrderStatusChanged } = require("../orderNotificationService");
 
 const PAYMENT_METHODS = {
   card: { orderMethod: "paymob_card", integration: () => config.paymobCardIntegrationId },
@@ -370,6 +371,7 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
     await attempt.save();
     checkout.cart.items = [];
     await checkout.cart.save();
+    await enqueueOrderCreated(order, { paymentPending: true });
     return { reused: false, ...safeAttemptResponse(attempt, order) };
   } catch (err) {
     await orderService.restoreStock(deducted);
@@ -563,6 +565,7 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
     attempt.checkoutReferenceProtected = encrypt(provider.clientSecret);
     attempt.status = "pending";
     await attempt.save();
+    await enqueueOrderCreated(order, { paymentPending: true });
     return {
       reused: false,
       ...safeAttemptResponse(attempt, order, {
@@ -712,7 +715,9 @@ async function processPaymobWebhook(body, query = {}) {
     await order.save();
     return { accepted: true, duplicate: false };
   }
+  let whatsappStatusTransition = null;
   if (boolValue(obj.success) && !boolValue(obj.pending)) {
+    const previousOrderStatus = order.orderStatus || "pending";
     attempt.status = "paid";
     attempt.providerTransactionId = transactionId;
     attempt.paidAt = new Date();
@@ -724,6 +729,9 @@ async function processPaymobWebhook(body, query = {}) {
     order.transactionId = transactionId;
     order.statusHistory = order.statusHistory || [];
     order.statusHistory.push({ status: "confirmed", paymentStatus: "paid", note: "Verified Paymob webhook confirmed payment" });
+    if (previousOrderStatus !== "confirmed") {
+      whatsappStatusTransition = { previousOrderStatus, nextStatus: "confirmed" };
+    }
   } else if (!boolValue(obj.pending)) {
     attempt.status = "failed";
     attempt.failedAt = new Date();
@@ -735,6 +743,10 @@ async function processPaymobWebhook(body, query = {}) {
   }
   await attempt.save();
   await order.save();
+  if (whatsappStatusTransition) {
+    const { previousOrderStatus, nextStatus } = whatsappStatusTransition;
+    await enqueueOrderStatusChanged(order, previousOrderStatus, nextStatus, { source: "paymob_webhook" });
+  }
   return { accepted: true };
 }
 

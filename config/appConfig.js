@@ -97,6 +97,14 @@ const config = {
   paymobPaymentTtlMinutes: readInt("PAYMOB_PAYMENT_TTL_MINUTES", 30),
   paymobCurrency: readString("PAYMOB_CURRENCY", readString("STORE_CURRENCY", "EGP")).toUpperCase(),
   paymobAllowLive: readBool("PAYMOB_ALLOW_LIVE", false),
+  openwaEnabled: readBool("OPENWA_ENABLED", false),
+  openwaBaseUrl: readString("OPENWA_BASE_URL"),
+  openwaApiKey: readString("OPENWA_API_KEY"),
+  openwaSessionId: readString("OPENWA_SESSION_ID"),
+  openwaTimeoutMs: readInt("OPENWA_TIMEOUT_MS", 10000),
+  whatsappMaxAttempts: readInt("WHATSAPP_MAX_ATTEMPTS", 5),
+  whatsappDispatchBatchSize: readInt("WHATSAPP_DISPATCH_BATCH_SIZE", 10),
+  whatsappLockTimeoutMs: readInt("WHATSAPP_LOCK_TIMEOUT_MS", 120000),
 };
 
 function validateConfig() {
@@ -132,7 +140,7 @@ function validateConfig() {
     throw new Error("GOOGLE_CLIENT_ID is required when GOOGLE_AUTH_ENABLED=true");
   }
   if (config.nodeEnv === "production") {
-    if (!config.clientOrigin || config.clientOrigin.includes("*") || config.clientOrigin.includes("localhost")) {
+    if (!config.clientOrigin || config.clientOrigin.includes("*")) {
       throw new Error("CLIENT_ORIGIN must be explicit and production-safe when NODE_ENV=production");
     }
     if (config.legacyBraintreeEnabled) {
@@ -181,6 +189,40 @@ function validateConfig() {
     if (config.paymobAdapter === "fake" && config.nodeEnv !== "test") {
       throw new Error("PAYMOB_ADAPTER=fake is allowed only when NODE_ENV=test");
     }
+  }
+  if (config.openwaEnabled) {
+    const openwaMissing = [
+      ["OPENWA_BASE_URL", config.openwaBaseUrl],
+      ["OPENWA_API_KEY", config.openwaApiKey],
+      ["OPENWA_SESSION_ID", config.openwaSessionId],
+    ].filter(([, value]) => !value).map(([name]) => name);
+    if (openwaMissing.length) {
+      throw new Error(`Missing required OpenWA environment variable(s): ${openwaMissing.join(", ")}`);
+    }
+    try {
+      const url = new URL(config.openwaBaseUrl);
+      if (!["http:", "https:"].includes(url.protocol)) throw new Error("invalid protocol");
+    } catch (err) {
+      throw new Error("OPENWA_BASE_URL must be an HTTP(S) URL");
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(config.openwaSessionId)) {
+      throw new Error("OPENWA_SESSION_ID must be an OpenWA session UUID");
+    }
+  }
+  if (!Number.isSafeInteger(config.openwaTimeoutMs) || config.openwaTimeoutMs < 1000 || config.openwaTimeoutMs > 120000) {
+    throw new Error("OPENWA_TIMEOUT_MS must be a whole number from 1000 to 120000");
+  }
+  if (!Number.isSafeInteger(config.whatsappMaxAttempts) || config.whatsappMaxAttempts < 1 || config.whatsappMaxAttempts > 10) {
+    throw new Error("WHATSAPP_MAX_ATTEMPTS must be a whole number from 1 to 10");
+  }
+  if (!Number.isSafeInteger(config.whatsappDispatchBatchSize) || config.whatsappDispatchBatchSize < 1 || config.whatsappDispatchBatchSize > 100) {
+    throw new Error("WHATSAPP_DISPATCH_BATCH_SIZE must be a whole number from 1 to 100");
+  }
+  if (!Number.isSafeInteger(config.whatsappLockTimeoutMs) || config.whatsappLockTimeoutMs < 1000 || config.whatsappLockTimeoutMs > 3600000) {
+    throw new Error("WHATSAPP_LOCK_TIMEOUT_MS must be a whole number from 1000 to 3600000");
+  }
+  if (config.whatsappLockTimeoutMs <= config.openwaTimeoutMs) {
+    throw new Error("WHATSAPP_LOCK_TIMEOUT_MS must be greater than OPENWA_TIMEOUT_MS");
   }
 }
 

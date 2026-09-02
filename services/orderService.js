@@ -7,6 +7,7 @@ const userModel = require("../models/users");
 const { config } = require("../config/appConfig");
 const { isValidObjectId } = require("../utils/validation");
 const { isProductActive } = require("./cartService");
+const { enqueueOrderCreated, enqueueOrderStatusChanged } = require("./orderNotificationService");
 const { validateProductOptions } = require("./productOptionService");
 const {
   calculateCheckoutPricing,
@@ -515,6 +516,7 @@ async function createCodOrder(userId, body, idempotencyHeader) {
     });
     checkout.cart.items = [];
     await checkout.cart.save();
+    await enqueueOrderCreated(order, { paymentPending: false });
     return { order: normalizeOrder(order), reused: false };
   } catch (err) {
     await restoreStock(deducted);
@@ -617,6 +619,7 @@ async function createGuestCodOrder(body, idempotencyHeader) {
         },
       ],
     });
+    await enqueueOrderCreated(order, { paymentPending: false });
     return {
       order: normalizeOrder(order),
       reused: false,
@@ -756,6 +759,7 @@ async function updateStatus(orderId, nextStatus, adminUserId, options = {}) {
     changedBy: adminUserId,
   });
   await order.save();
+  await enqueueOrderStatusChanged(order, current, nextStatus);
   return normalizeOrder(order, options);
 }
 
