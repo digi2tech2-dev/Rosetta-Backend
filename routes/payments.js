@@ -6,14 +6,26 @@ const { config } = require("../config/appConfig");
 const { optionalCheckoutAuth, requireAuth } = require("../middleware/auth");
 
 const paymentLimiter = rateLimit({
-  windowMs: config.authRateLimitWindowMs,
-  max: Math.max(config.authRateLimitMax, 30),
+  windowMs: config.paymentRateLimitWindowMs,
+  max: config.paymentRateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     success: false,
     code: "RATE_LIMITED",
     error: "Too many payment attempts. Please try again later.",
+  },
+});
+
+const paymentStatusLimiter = rateLimit({
+  windowMs: config.paymentRateLimitWindowMs,
+  max: config.paymentStatusRateLimitMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    code: "RATE_LIMITED",
+    error: "Too many payment status requests. Please try again later.",
   },
 });
 
@@ -37,7 +49,7 @@ router.get(
 
 router.post(
   "/payments/guest/status",
-  paymentLimiter,
+  paymentStatusLimiter,
   paymentsController.getGuestStatus.bind(paymentsController)
 );
 

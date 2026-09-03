@@ -6,8 +6,8 @@ const { config } = require("../config/appConfig");
 const { optionalCheckoutAuth, requireAuth, requireRole } = require("../middleware/auth");
 
 const checkoutLimiter = rateLimit({
-  windowMs: config.authRateLimitWindowMs,
-  max: Math.max(config.authRateLimitMax, 30),
+  windowMs: config.checkoutRateLimitWindowMs,
+  max: config.checkoutRateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
