@@ -23,7 +23,7 @@ const {
 } = require("../guestCheckoutService");
 const { PaymobAdapter, buildCheckoutUrl } = require("./paymobAdapter");
 const { FakePaymobAdapter } = require("./fakePaymobAdapter");
-const { enqueueOrderCreated, enqueueOrderStatusChanged } = require("../orderNotificationService");
+const { enqueueOrderCreated } = require("../orderNotificationService");
 
 const PAYMENT_METHODS = {
   card: { orderMethod: "paymob_card", integration: () => config.paymobCardIntegrationId },
@@ -371,7 +371,6 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
     await attempt.save();
     checkout.cart.items = [];
     await checkout.cart.save();
-    await enqueueOrderCreated(order, { paymentPending: true });
     return { reused: false, ...safeAttemptResponse(attempt, order) };
   } catch (err) {
     await orderService.restoreStock(deducted);
@@ -565,7 +564,6 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
     attempt.checkoutReferenceProtected = encrypt(provider.clientSecret);
     attempt.status = "pending";
     await attempt.save();
-    await enqueueOrderCreated(order, { paymentPending: true });
     return {
       reused: false,
       ...safeAttemptResponse(attempt, order, {
@@ -683,6 +681,9 @@ async function processPaymobWebhook(body, query = {}) {
   if (!order) throw httpError(202, "PAYMENT_ORDER_UNKNOWN", "Payment order is unknown");
   const eventId = `${transactionId}:${obj.success}:${obj.pending}:${obj.amount_cents}`;
   if ((attempt.webhookEvents || []).some((event) => event.providerEventId === eventId)) {
+    if (attempt.status === "paid" && order.paymentStatus === "paid" && boolValue(obj.success) && !boolValue(obj.pending)) {
+      await enqueueOrderCreated(order, { paymentPending: false });
+    }
     return { accepted: true, duplicate: true };
   }
   attempt.webhookEvents.push({
@@ -715,9 +716,8 @@ async function processPaymobWebhook(body, query = {}) {
     await order.save();
     return { accepted: true, duplicate: false };
   }
-  let whatsappStatusTransition = null;
+  let paymentConfirmed = false;
   if (boolValue(obj.success) && !boolValue(obj.pending)) {
-    const previousOrderStatus = order.orderStatus || "pending";
     attempt.status = "paid";
     attempt.providerTransactionId = transactionId;
     attempt.paidAt = new Date();
@@ -729,9 +729,7 @@ async function processPaymobWebhook(body, query = {}) {
     order.transactionId = transactionId;
     order.statusHistory = order.statusHistory || [];
     order.statusHistory.push({ status: "confirmed", paymentStatus: "paid", note: "Verified Paymob webhook confirmed payment" });
-    if (previousOrderStatus !== "confirmed") {
-      whatsappStatusTransition = { previousOrderStatus, nextStatus: "confirmed" };
-    }
+    paymentConfirmed = true;
   } else if (!boolValue(obj.pending)) {
     attempt.status = "failed";
     attempt.failedAt = new Date();
@@ -743,9 +741,8 @@ async function processPaymobWebhook(body, query = {}) {
   }
   await attempt.save();
   await order.save();
-  if (whatsappStatusTransition) {
-    const { previousOrderStatus, nextStatus } = whatsappStatusTransition;
-    await enqueueOrderStatusChanged(order, previousOrderStatus, nextStatus, { source: "paymob_webhook" });
+  if (paymentConfirmed) {
+    await enqueueOrderCreated(order, { paymentPending: false });
   }
   return { accepted: true };
 }

@@ -30,6 +30,7 @@ const {
 
 const ORDER_STATUSES = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"];
 const PAYMENT_STATUSES = ["unpaid", "pending", "paid", "refunded", "failed", "expired", "cancelled", "manual_review"];
+const PAYMOB_ORDER_METHODS = ["paymob_card", "paymob_wallet"];
 const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
   confirmed: ["processing", "cancelled"],
@@ -667,7 +668,12 @@ async function getMyOrder(userId, orderId) {
 }
 
 function adminFilter(query) {
-  const filter = {};
+  const filter = {
+    $or: [
+      { paymentMethod: { $nin: PAYMOB_ORDER_METHODS } },
+      { paymentStatus: { $in: ["paid", "manual_review"] } },
+    ],
+  };
   if (query.orderStatus) {
     if (!ORDER_STATUSES.includes(query.orderStatus)) {
       throw httpError(400, "VALIDATION_ERROR", "Invalid orderStatus filter");

@@ -7,6 +7,7 @@ const categoryModel = require("../models/categories");
 const productModel = require("../models/products");
 const cartModel = require("../models/carts");
 const orderModel = require("../models/orders");
+const notificationOutboxModel = require("../models/notificationOutbox");
 const couponModel = require("../models/coupons");
 const paymentAttemptModel = require("../models/paymentAttempts");
 const commerceSettingsModel = require("../models/commerceSettings");
@@ -16,6 +17,7 @@ const orderService = require("../services/orderService");
 
 const REQUIRED_DB = process.env.PAYMOB_SMOKE_DATABASE_NAME || "client_store_phase2j_disposable";
 const TEST_PREFIX = "phase2j-paymob-";
+const originalOpenwaEnabled = config.openwaEnabled;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -24,7 +26,9 @@ function assert(condition, message) {
 async function cleanup() {
   const users = await userModel.find({ email: new RegExp(`^${TEST_PREFIX}`) }).select("_id");
   const userIds = users.map((user) => user._id);
+  const orders = await orderModel.find({ user: { $in: userIds } }).select("_id");
   const products = await productModel.find({ pName: new RegExp(`^${TEST_PREFIX}`) }).select("_id");
+  await notificationOutboxModel.deleteMany({ order: { $in: orders.map((order) => order._id) } });
   await paymentAttemptModel.deleteMany({ customer: { $in: userIds } });
   await orderModel.deleteMany({ user: { $in: userIds } });
   await cartModel.deleteMany({ user: { $in: userIds } });
@@ -144,6 +148,7 @@ async function main() {
     useUnifiedTopology: true,
     useCreateIndex: true,
   });
+  config.openwaEnabled = true;
   await cleanup();
   const tests = [];
   async function test(name, fn) {
@@ -160,6 +165,11 @@ async function main() {
     assert(card.attempt.status === "pending", "attempt not pending");
     assert(card.order.paymentMethod === "paymob_card", "card method not stored");
     assert(card.order.paymentStatus === "pending", "order payment not pending");
+    assert(await notificationOutboxModel.countDocuments({ order: card.order._id, eventType: "order_created" }) === 0, "Paymob intention enqueued an order-created notification");
+  });
+  await test("Unpaid Paymob orders are hidden from the admin list", async () => {
+    const listed = await orderService.listAdminOrders({ limit: "100" });
+    assert(!listed.orders.some((order) => order.id === String(card.order._id)), "pending Paymob order was visible to admin");
   });
   await test("Wallet intention selects wallet integration", async () => {
     wallet = await createAttempt("wallet", `${TEST_PREFIX}wallet-key`);
@@ -240,12 +250,20 @@ async function main() {
     const order = await orderModel.findById(card.order._id);
     assert(attempt.status === "paid", "attempt not paid");
     assert(order.paymentStatus === "paid" && order.orderStatus === "confirmed", "order not confirmed paid");
+    const events = await notificationOutboxModel.find({ order: card.order._id }).lean();
+    assert(events.length === 1 && events[0].eventType === "order_created", "paid Paymob order did not enqueue one order-created notification");
+    assert(events[0].payload.paymentPending === false && events[0].message.includes("تم تأكيد الطلب"), "paid Paymob notification was not an order confirmation");
+  });
+  await test("Paid Paymob orders are visible to admin", async () => {
+    const listed = await orderService.listAdminOrders({ limit: "100" });
+    assert(listed.orders.some((order) => order.id === String(card.order._id)), "paid Paymob order was hidden from admin");
   });
   await test("Duplicate webhook is idempotent", async () => {
     const body = webhookFor(card.attempt);
     await paymentService.processPaymobWebhook(body, {});
     const attempt = await paymentAttemptModel.findById(card.attempt._id);
     assert(attempt.webhookEvents.length === 1, "duplicate webhook recorded twice");
+    assert(await notificationOutboxModel.countDocuments({ order: card.order._id, eventType: "order_created" }) === 1, "duplicate webhook enqueued a duplicate notification");
   });
   await test("Missing HMAC rejected", async () => {
     let failed = false;
@@ -285,6 +303,9 @@ async function main() {
     const attempt = await paymentAttemptModel.findById(failure.attempt._id);
     assert(attempt.status === "failed", "attempt not failed");
     assert(product.pQuantity === 8 && product.pSold === 0, "stock not restored exactly once");
+    const listed = await orderService.listAdminOrders({ limit: "100" });
+    assert(!listed.orders.some((order) => order.id === String(failure.order._id)), "failed Paymob order was visible to admin");
+    assert(await notificationOutboxModel.countDocuments({ order: failure.order._id, eventType: "order_created" }) === 0, "failed Paymob order enqueued a notification");
   });
   await test("Expired pending attempt releases reservation once", async () => {
     const expiring = await createAttempt("wallet", `${TEST_PREFIX}expire`);
@@ -297,6 +318,9 @@ async function main() {
     const attempt = await paymentAttemptModel.findById(expiring.attempt._id);
     assert(attempt.status === "expired", "attempt not expired");
     assert(product.pQuantity === 8 && product.pSold === 0, "expiry did not restore exactly once");
+    const listed = await orderService.listAdminOrders({ limit: "100" });
+    assert(!listed.orders.some((order) => order.id === String(expiring.order._id)), "expired Paymob order was visible to admin");
+    assert(await notificationOutboxModel.countDocuments({ order: expiring.order._id, eventType: "order_created" }) === 0, "expired Paymob order enqueued a notification");
   });
   await test("Paid attempt is not expired", async () => {
     await paymentAttemptModel.findByIdAndUpdate(card.attempt._id, { expiresAt: new Date(Date.now() - 1000) });
@@ -323,6 +347,9 @@ async function main() {
     const result = await orderService.createCodOrder(String(customer._id), { shippingAddress }, `${TEST_PREFIX}cod`);
     assert(result.order.paymentMethod === "cash_on_delivery", "COD method changed");
     assert(result.order.paymentStatus === "unpaid", "COD payment status changed");
+    assert(await notificationOutboxModel.countDocuments({ order: result.order.id, eventType: "order_created" }) === 1, "COD did not enqueue its immediate notification");
+    const listed = await orderService.listAdminOrders({ limit: "100" });
+    assert(listed.orders.some((order) => order.id === result.order.id), "COD order was hidden from admin");
   });
   await test("Fake adapter cannot be constructed outside explicit test setting", async () => {
     assert(config.nodeEnv === "test" && config.paymobAdapter === "fake", "fake adapter guard environment changed");
@@ -351,4 +378,7 @@ main()
     console.error(`PAYMOB_PAYMENT_SMOKE_FAIL: ${error.message}`);
     process.exitCode = 1;
   })
-  .finally(() => mongoose.disconnect().catch(() => {}));
+  .finally(() => {
+    config.openwaEnabled = originalOpenwaEnabled;
+    return mongoose.disconnect().catch(() => {});
+  });
