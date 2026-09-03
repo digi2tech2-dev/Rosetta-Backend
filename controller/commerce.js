@@ -2,6 +2,7 @@ const couponModel = require("../models/coupons");
 const couponRedemptionModel = require("../models/couponRedemptions");
 const shippingRuleModel = require("../models/shippingRules");
 const commerceSettingsModel = require("../models/commerceSettings");
+const { egyptGovernorates, canonicalGovernorate } = require("../data/egyptGovernorates");
 const {
   calculateCheckoutPricing,
   calculateGuestCheckoutPricing,
@@ -165,7 +166,7 @@ function shippingPayload(body, adminId, partial = false) {
   ]);
   const payload = {};
   if (allowed.name !== undefined) payload.name = String(allowed.name || "").trim();
-  if (allowed.governorate !== undefined) payload.governorate = String(allowed.governorate || "").trim() || null;
+  if (allowed.governorate !== undefined) payload.governorate = canonicalGovernorate(allowed.governorate) || null;
   if (allowed.city !== undefined) payload.city = String(allowed.city || "").trim() || null;
   if (allowed.fee !== undefined) payload.fee = nullableMoney(allowed.fee, "fee");
   if (allowed.freeShippingThreshold !== undefined) {
@@ -277,6 +278,10 @@ function serializeSettings(settings) {
 }
 
 class CommerceController {
+  async listShippingGovernorates(req, res) {
+    return res.json({ success: true, governorates: egyptGovernorates });
+  }
+
   async shippingPromotion(req, res) {
     try {
       const cartItems = normalizeGuestCartItems(req.body.cartItems || []);

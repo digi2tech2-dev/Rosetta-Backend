@@ -165,6 +165,15 @@ async function seed() {
       createdBy: admin._id,
     },
     {
+      name: `${TEST_PREFIX}alexandria`,
+      governorate: "الإسكندرية",
+      city: null,
+      fee: 45,
+      active: true,
+      priority: 1,
+      createdBy: admin._id,
+    },
+    {
       name: `${TEST_PREFIX}inactive`,
       governorate: "Giza",
       city: "Dokki",
@@ -248,6 +257,13 @@ async function main() {
       assert(shipping.status === 403, "customer accessed shipping rules");
     });
 
+    await test("Shipping governorate source exposes canonical values without admin access", async () => {
+      const response = await request("/api/shipping/governorates");
+      const alexandria = response.body.governorates?.find((governorate) => governorate.value === "الإسكندرية");
+      assert(response.status === 200 && response.body.success, "shipping governorate source failed");
+      assert(alexandria?.labels?.en === "Alexandria", "canonical Alexandria value or English label is missing");
+    });
+
     await test("Admin creates fixed coupon and duplicate code is controlled", async () => {
       const created = await request("/api/admin/coupons", {
         method: "POST",
@@ -301,6 +317,17 @@ async function main() {
       assert(quote.body.quote.summary.discountTotal === 10, "first order promo not server-calculated");
       assert(quote.body.quote.summary.shippingFee === 12, "city shipping rule not used");
       assert(quote.body.quote.summary.grandTotal === 102, "grand total mismatch");
+    });
+
+    await test("Canonical and legacy Alexandria spellings resolve the configured shipping rule", async () => {
+      const alexandriaAddress = { ...address, governorate: "الإسكندرية", city: "قسم أول الرمل" };
+      const legacyAlexandriaAddress = { ...alexandriaAddress, governorate: "الاسكندرية" };
+      const [canonical, legacy] = await Promise.all([
+        request("/api/checkout/quote", { method: "POST", token: seeded.customerToken, body: { shippingAddress: alexandriaAddress } }),
+        request("/api/checkout/quote", { method: "POST", token: seeded.customerToken, body: { shippingAddress: legacyAlexandriaAddress } }),
+      ]);
+      assert(canonical.status === 200 && canonical.body.quote.summary.shippingFee === 45, "canonical Alexandria shipping rule was not used");
+      assert(legacy.status === 200 && legacy.body.quote.summary.shippingFee === 45, "legacy Alexandria spelling was not recognized");
     });
 
     await test("Quote does not consume coupon usage", async () => {

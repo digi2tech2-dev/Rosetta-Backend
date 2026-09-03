@@ -8,6 +8,7 @@ const couponModel = require("../models/coupons");
 const couponRedemptionModel = require("../models/couponRedemptions");
 const shippingRuleModel = require("../models/shippingRules");
 const commerceSettingsModel = require("../models/commerceSettings");
+const { governorateComparisonKey } = require("../data/egyptGovernorates");
 const { isValidObjectId } = require("../utils/validation");
 const { validateProductOptions } = require("./productOptionService");
 const { normalizeGuestCartItems } = require("./guestCheckoutService");
@@ -148,7 +149,13 @@ function normalizeCode(code) {
 }
 
 function normalizePlace(value) {
-  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  return String(value || "")
+    .trim()
+    .replace(/[\u064B-\u065F\u0670]/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 }
 
 function shippingAddressFromUserAddress(address) {
@@ -448,17 +455,17 @@ function resolveFirstOrderPromotion({ settings, subtotalCents, isFirstOrder }) {
 }
 
 async function resolveShipping({ settings, address, subtotalCents, totalQuantity }) {
-  const governorate = normalizePlace(address.governorate || address.city);
+  const governorate = governorateComparisonKey(address.governorate || address.city);
   const city = normalizePlace(address.city || address.area);
   if (!governorate) {
     throw httpError(409, "SHIPPING_UNAVAILABLE", "Shipping address governorate is required");
   }
   const activeRules = await shippingRuleModel.find({ active: true }).sort({ priority: -1, createdAt: -1 });
   const exact = activeRules.find(
-    (rule) => normalizePlace(rule.governorate) === governorate && normalizePlace(rule.city) === city && city
+    (rule) => governorateComparisonKey(rule.governorate) === governorate && normalizePlace(rule.city) === city && city
   );
   const governorateRule = activeRules.find(
-    (rule) => normalizePlace(rule.governorate) === governorate && !normalizePlace(rule.city)
+    (rule) => governorateComparisonKey(rule.governorate) === governorate && !normalizePlace(rule.city)
   );
   const defaultRule = activeRules.find((rule) => !normalizePlace(rule.governorate) && !normalizePlace(rule.city));
   const rule = exact || governorateRule || defaultRule;

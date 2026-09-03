@@ -17,6 +17,10 @@ const checkoutLimiter = rateLimit({
   },
 });
 
+// Public, read-only projection of the same canonical source used to create
+// shipping rules in Admin > Shipping & Offers.
+router.get("/shipping/governorates", commerceController.listShippingGovernorates.bind(commerceController));
+
 router.post(
   "/checkout/quote",
   checkoutLimiter,
