@@ -13,6 +13,7 @@ const { isValidObjectId } = require("../utils/validation");
 const { validateProductOptions } = require("./productOptionService");
 const { normalizeGuestCartItems } = require("./guestCheckoutService");
 const { calculateBundlePricingForItems } = require("./bundleOfferService");
+const { resolvePackagingSelections } = require("./packagingService");
 
 const QUALIFYING_FIRST_ORDER_STATUSES = [
   "pending",
@@ -224,11 +225,12 @@ function serializeMoneySummary({
   merchandiseSubtotalCents,
   discountCents,
   shippingCents,
+  packagingCents = 0,
   currency,
   normalSubtotalCents,
   bundleDiscountCents = 0,
 }) {
-  const grandTotalCents = Math.max(0, merchandiseSubtotalCents - discountCents + shippingCents);
+  const grandTotalCents = Math.max(0, merchandiseSubtotalCents - discountCents + packagingCents + shippingCents);
   return {
     itemCount,
     totalQuantity: itemCount,
@@ -238,6 +240,7 @@ function serializeMoneySummary({
     bundleDiscount: fromCents(bundleDiscountCents),
     otherDiscount: fromCents(discountCents),
     discountTotal: fromCents(discountCents),
+    packagingTotal: fromCents(packagingCents),
     shippingFee: fromCents(shippingCents),
     total: fromCents(grandTotalCents),
     grandTotal: fromCents(grandTotalCents),
@@ -510,7 +513,7 @@ async function resolveShipping({ settings, address, subtotalCents, totalQuantity
   };
 }
 
-async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddressId, couponCode, now = new Date() }) {
+async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddressId, couponCode, packaging, now = new Date() }) {
   if (!isValidObjectId(customerId)) {
     throw httpError(401, "AUTH_REQUIRED", "Authentication is required");
   }
@@ -535,6 +538,7 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
     : resolveFirstOrderPromotion({ settings, subtotalCents: discountedSubtotalCents, isFirstOrder });
   const discount = couponDiscount || firstOrderDiscount || { source: "none", discountCents: 0 };
   const shipping = await resolveShipping({ settings, address, subtotalCents: discountedSubtotalCents, totalQuantity: cartData.itemCount });
+  const packagingSelection = await resolvePackagingSelections(packaging, cartData.items);
   const summary = serializeMoneySummary({
     itemCount: cartData.itemCount,
     merchandiseSubtotalCents: discountedSubtotalCents,
@@ -542,6 +546,7 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
     bundleDiscountCents: bundlePricing.bundleDiscountTotalCents,
     discountCents: discount.discountCents,
     shippingCents: shipping.finalFeeCents,
+    packagingCents: packagingSelection.totalCents,
     currency: settings.currency || config.storeCurrency,
   });
   return {
@@ -575,6 +580,7 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
       nextThreshold: shipping.quantityPromotion.nextThreshold,
       quantityNeededForNextThreshold: shipping.quantityPromotion.quantityNeededForNextThreshold,
     },
+    packaging: packagingSelection,
     summary,
     pricingSnapshot: {
       currency: summary.currency,
@@ -583,6 +589,7 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
       merchandiseSubtotal: summary.merchandiseSubtotal,
       bundleDiscountTotal: summary.bundleDiscount,
       discountTotal: summary.discountTotal,
+      packagingTotal: summary.packagingTotal,
       shippingFee: summary.shippingFee,
       grandTotal: summary.grandTotal,
       discountSource: discount.source,
@@ -590,13 +597,13 @@ async function calculateCheckoutPricing({ customerId, shippingAddress, savedAddr
       firstOrderPromotionSnapshot: firstOrderDiscount ? firstOrderDiscount.snapshot : null,
       bundleSnapshots: bundlePricing.bundleSnapshots,
       shippingSnapshot: shipping.snapshot,
-      pricingVersion: "2QB",
+      pricingVersion: "3PKG",
     },
     coupon: couponDiscount ? couponDiscount.coupon : null,
   };
 }
 
-async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, couponCode, now = new Date() }) {
+async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, couponCode, packaging, now = new Date() }) {
   const [settings, cartData] = await Promise.all([
     getCommerceSettings(),
     buildGuestCart(cartItems),
@@ -614,6 +621,7 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
   });
   const discount = couponDiscount || { source: "none", discountCents: 0 };
   const shipping = await resolveShipping({ settings, address, subtotalCents: discountedSubtotalCents, totalQuantity: cartData.itemCount });
+  const packagingSelection = await resolvePackagingSelections(packaging, cartData.items);
   const summary = serializeMoneySummary({
     itemCount: cartData.itemCount,
     merchandiseSubtotalCents: discountedSubtotalCents,
@@ -621,6 +629,7 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
     bundleDiscountCents: bundlePricing.bundleDiscountTotalCents,
     discountCents: discount.discountCents,
     shippingCents: shipping.finalFeeCents,
+    packagingCents: packagingSelection.totalCents,
     currency: settings.currency || config.storeCurrency,
   });
   return {
@@ -654,6 +663,7 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
       nextThreshold: shipping.quantityPromotion.nextThreshold,
       quantityNeededForNextThreshold: shipping.quantityPromotion.quantityNeededForNextThreshold,
     },
+    packaging: packagingSelection,
     summary,
     pricingSnapshot: {
       currency: summary.currency,
@@ -662,6 +672,7 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
       merchandiseSubtotal: summary.merchandiseSubtotal,
       bundleDiscountTotal: summary.bundleDiscount,
       discountTotal: summary.discountTotal,
+      packagingTotal: summary.packagingTotal,
       shippingFee: summary.shippingFee,
       grandTotal: summary.grandTotal,
       discountSource: discount.source,
@@ -669,7 +680,7 @@ async function calculateGuestCheckoutPricing({ cartItems, shippingAddress, coupo
       firstOrderPromotionSnapshot: null,
       bundleSnapshots: bundlePricing.bundleSnapshots,
       shippingSnapshot: shipping.snapshot,
-      pricingVersion: "2QB",
+      pricingVersion: "3PKG",
     },
     coupon: couponDiscount ? couponDiscount.coupon : null,
   };

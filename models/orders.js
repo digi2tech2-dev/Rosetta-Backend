@@ -140,6 +140,7 @@ const pricingSnapshotSchema = new mongoose.Schema(
       default: 0,
     },
     discountTotal: Number,
+    packagingTotal: { type: Number, default: 0 },
     shippingFee: Number,
     grandTotal: Number,
     discountSource: {
@@ -156,6 +157,20 @@ const pricingSnapshotSchema = new mongoose.Schema(
     shippingSnapshot: { type: shippingSnapshotSchema, default: null },
     pricingVersion: String,
   },
+  { _id: false }
+);
+
+const packagingAssignmentSnapshotSchema = new mongoose.Schema(
+  {
+    itemIndex: Number, product: String, productName: String, unitIndex: Number,
+    packagingOptionId: String, nameAr: String, nameEn: String, image: String,
+    unitPrice: Number, quantity: { type: Number, default: 1 },
+  },
+  { _id: false }
+);
+
+const packagingSnapshotSchema = new mongoose.Schema(
+  { mode: String, assignments: { type: [packagingAssignmentSnapshotSchema], default: [] }, total: { type: Number, default: 0 } },
   { _id: false }
 );
 
@@ -241,6 +256,8 @@ const orderSchema = new mongoose.Schema(
     subtotal: Number,
     shippingFee: Number,
     discountTotal: Number,
+    packagingTotal: { type: Number, default: 0 },
+    packaging: { type: packagingSnapshotSchema, default: null },
     discountSource: {
       type: String,
       enum: ["none", "coupon", "first_order"],

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const { uploadFolderPath } = require("../utils/uploadPaths");
 
-const uploadFolders = ["categories", "customize", "products", "avatars"];
+const uploadFolders = ["categories", "customize", "products", "avatars", "packaging"];
 
 const CreateAllFolder = () => {
   for (const folder of uploadFolders) {

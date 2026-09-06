@@ -112,7 +112,7 @@ function assertProviderAvailable(method) {
   return String(integration);
 }
 
-function requestFingerprint({ method, shippingAddress, savedAddressId, couponCode, cartItems, pricing }) {
+function requestFingerprint({ method, shippingAddress, savedAddressId, couponCode, cartItems, pricing, packaging }) {
   return digest({
     method,
     shippingAddress,
@@ -133,6 +133,10 @@ function requestFingerprint({ method, shippingAddress, savedAddressId, couponCod
       amountMinor: amountMinor(pricing.grandTotal),
       currency: pricing.currency,
     },
+    packaging: (packaging?.assignments || []).map((entry) => ({
+      itemIndex: entry.itemIndex, unitIndex: entry.unitIndex,
+      packagingOptionId: String(entry.packagingOptionId || entry.optionId || ""), unitPrice: entry.unitPrice,
+    })),
   });
 }
 
@@ -165,7 +169,8 @@ function sumProviderItems(items) {
 function providerItems(checkout) {
   const expectedCents = amountMinor(checkout && checkout.summary && checkout.summary.grandTotal);
   const shippingCents = amountMinor(checkout && checkout.summary && checkout.summary.shippingFee);
-  const paidMerchandiseCents = Math.max(0, expectedCents - shippingCents);
+  const packagingCents = amountMinor(checkout && checkout.summary && checkout.summary.packagingTotal);
+  const paidMerchandiseCents = Math.max(0, expectedCents - shippingCents - packagingCents);
   const productLines = (checkout.items || [])
     .map((item) => ({
       name: providerItemName(
@@ -193,7 +198,24 @@ function providerItems(checkout) {
   }
 
   if (shippingCents > 0) {
+    const grouping = new Map();
+    (checkout.packaging?.assignments || []).forEach((assignment) => {
+      const key = `${assignment.packagingOptionId}:${assignment.unitPrice}:${assignment.nameEn}`;
+      const previous = grouping.get(key) || { name: assignment.nameEn || assignment.nameAr || "Packaging", amountMinor: 0, quantity: 0 };
+      previous.amountMinor += amountMinor(assignment.unitPrice);
+      previous.quantity += 1;
+      grouping.set(key, previous);
+    });
+    grouping.forEach((row) => { if (row.amountMinor > 0) rows.push(row); });
     rows.push({ name: "Shipping", amountMinor: shippingCents, quantity: 1 });
+  } else {
+    const grouping = new Map();
+    (checkout.packaging?.assignments || []).forEach((assignment) => {
+      const key = `${assignment.packagingOptionId}:${assignment.unitPrice}:${assignment.nameEn}`;
+      const previous = grouping.get(key) || { name: assignment.nameEn || assignment.nameAr || "Packaging", amountMinor: 0, quantity: 0 };
+      previous.amountMinor += amountMinor(assignment.unitPrice); previous.quantity += 1; grouping.set(key, previous);
+    });
+    grouping.forEach((row) => { if (row.amountMinor > 0) rows.push(row); });
   }
 
   const actualCents = sumProviderItems(rows);
@@ -256,6 +278,7 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
       couponCode,
       cartItems,
       pricing: { grandTotal: order.total, currency: order.currency },
+      packaging: order.packaging,
     });
     if (existing.requestFingerprint !== fingerprint) {
       throw httpError(409, "IDEMPOTENCY_CONFLICT", "Idempotency key was reused with a different payment request");
@@ -266,13 +289,13 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
     return { reused: true, ...safeAttemptResponse(existing, order) };
   }
 
-  const checkout = await calculateCheckoutPricing({ customerId, shippingAddress, savedAddressId: body.savedAddressId, couponCode });
+  const checkout = await calculateCheckoutPricing({ customerId, shippingAddress, savedAddressId: body.savedAddressId, couponCode, packaging: body.packaging });
   const currency = String(checkout.summary.currency || config.storeCurrency).toUpperCase();
   if (currency !== config.paymobCurrency) {
     throw httpError(409, "PAYMENT_CURRENCY_MISMATCH", "Payment currency is not available");
   }
   const minor = amountMinor(checkout.summary.grandTotal);
-  const fingerprint = requestFingerprint({ method, shippingAddress, savedAddressId: body.savedAddressId, couponCode, cartItems: checkout.items, pricing: checkout.summary });
+  const fingerprint = requestFingerprint({ method, shippingAddress, savedAddressId: body.savedAddressId, couponCode, cartItems: checkout.items, pricing: checkout.summary, packaging: checkout.packaging });
   const customer = await userModel.findById(customerId);
   const customerSnapshot = await orderService.buildRegisteredCustomerSnapshot(customerId, checkout.shippingAddress);
   const orderId = new mongoose.Types.ObjectId();
@@ -309,6 +332,8 @@ async function createPaymobIntention(customerId, body, idempotencyHeader) {
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
+      packagingTotal: checkout.summary.packagingTotal,
+      packaging: orderService.packagingSnapshot(checkout),
       discountSource: checkout.pricingSnapshot.discountSource,
       shippingFee: checkout.summary.shippingFee,
       total: checkout.summary.grandTotal,
@@ -435,6 +460,7 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
       couponCode,
       cartItems: orderCartItems,
       pricing: { grandTotal: order.total, currency: order.currency },
+      packaging: order.packaging,
     });
     if (existing.requestFingerprint !== fingerprint) {
       throw httpError(409, "IDEMPOTENCY_CONFLICT", "Idempotency key was reused with a different payment request");
@@ -445,7 +471,7 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
     return { reused: true, ...safeAttemptResponse(existing, order) };
   }
 
-  const checkout = await calculateGuestCheckoutPricing({ cartItems, shippingAddress, couponCode });
+  const checkout = await calculateGuestCheckoutPricing({ cartItems, shippingAddress, couponCode, packaging: body.packaging });
   const currency = String(checkout.summary.currency || config.storeCurrency).toUpperCase();
   if (currency !== config.paymobCurrency) {
     throw httpError(409, "PAYMENT_CURRENCY_MISMATCH", "Payment currency is not available");
@@ -458,6 +484,7 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
     couponCode,
     cartItems: checkout.items,
     pricing: checkout.summary,
+    packaging: checkout.packaging,
   });
   const orderId = new mongoose.Types.ObjectId();
   const attemptId = new mongoose.Types.ObjectId();
@@ -497,6 +524,8 @@ async function createGuestPaymobIntention(body, idempotencyHeader) {
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
+      packagingTotal: checkout.summary.packagingTotal,
+      packaging: orderService.packagingSnapshot(checkout),
       discountSource: checkout.pricingSnapshot.discountSource,
       shippingFee: checkout.summary.shippingFee,
       total: checkout.summary.grandTotal,

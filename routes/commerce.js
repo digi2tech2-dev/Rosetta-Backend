@@ -4,6 +4,8 @@ const router = express.Router();
 const { commerceController } = require("../controller/commerce");
 const { config } = require("../config/appConfig");
 const { optionalCheckoutAuth, requireAuth, requireRole } = require("../middleware/auth");
+const { imageUpload, uploadErrorHandler } = require("../utils/upload");
+const packagingUpload = imageUpload("packaging", 1, { maxFileSizeMb: config.uploadMaxFileSizeMb });
 
 const checkoutLimiter = rateLimit({
   windowMs: config.checkoutRateLimitWindowMs,
@@ -20,6 +22,26 @@ const checkoutLimiter = rateLimit({
 // Public, read-only projection of the same canonical source used to create
 // shipping rules in Admin > Shipping & Offers.
 router.get("/shipping/governorates", commerceController.listShippingGovernorates.bind(commerceController));
+router.get("/packaging-options", commerceController.listPackagingOptions.bind(commerceController));
+
+router.post(
+  "/admin/packaging-options",
+  requireAuth, requireRole("admin"), packagingUpload.single("image"), uploadErrorHandler,
+  commerceController.createPackagingOption.bind(commerceController)
+);
+router.patch(
+  "/admin/packaging-options/:optionId",
+  requireAuth, requireRole("admin"), packagingUpload.single("image"), uploadErrorHandler,
+  commerceController.updatePackagingOption.bind(commerceController)
+);
+router.delete(
+  "/admin/packaging-options/:optionId",
+  requireAuth, requireRole("admin"), commerceController.deletePackagingOption.bind(commerceController)
+);
+router.get(
+  "/admin/packaging-options",
+  requireAuth, requireRole("admin"), commerceController.listAdminPackagingOptions.bind(commerceController)
+);
 
 router.post(
   "/checkout/quote",

@@ -12,6 +12,9 @@ const {
 } = require("../services/pricingService");
 const { normalizeGuestCartItems } = require("../services/guestCheckoutService");
 const { isValidObjectId, pickAllowed } = require("../utils/validation");
+const packagingOptionModel = require("../models/packagingOptions");
+const { listActivePackagingOptions, ensureCatalog, serializePackagingOption } = require("../services/packagingService");
+const { uploadPublicUrl } = require("../utils/uploadPaths");
 
 function sendError(res, err) {
   return res.status(err.status || 500).json({
@@ -278,6 +281,81 @@ function serializeSettings(settings) {
 }
 
 class CommerceController {
+  async listPackagingOptions(req, res) {
+    try { return res.json({ success: true, options: await listActivePackagingOptions() }); }
+    catch (err) { return sendError(res, err); }
+  }
+
+  async listAdminPackagingOptions(req, res) {
+    try {
+      await ensureCatalog();
+      const options = await packagingOptionModel.find({}).sort({ displayOrder: 1, createdAt: 1 });
+      return res.json({ success: true, options: options.map(serializePackagingOption) });
+    } catch (err) { return sendError(res, err); }
+  }
+
+  packagingPayload(body, adminId, partial = false) {
+    const allowed = pickAllowed(body || {}, ["nameAr", "nameEn", "descriptionAr", "descriptionEn", "price", "active", "displayOrder", "isDefault"]);
+    const payload = {};
+    if (allowed.nameAr !== undefined) payload.nameAr = String(allowed.nameAr || "").trim();
+    if (allowed.nameEn !== undefined) payload.nameEn = String(allowed.nameEn || "").trim();
+    if (allowed.descriptionAr !== undefined) payload.descriptionAr = String(allowed.descriptionAr || "").trim().slice(0, 300);
+    if (allowed.descriptionEn !== undefined) payload.descriptionEn = String(allowed.descriptionEn || "").trim().slice(0, 300);
+    if (allowed.price !== undefined) payload.price = nullableMoney(allowed.price, "price");
+    if (allowed.active !== undefined) payload.active = allowed.active === true || allowed.active === "true";
+    if (allowed.isDefault !== undefined) payload.isDefault = allowed.isDefault === true || allowed.isDefault === "true";
+    if (allowed.displayOrder !== undefined) {
+      const value = Number(allowed.displayOrder);
+      if (!Number.isInteger(value)) throw httpError(400, "VALIDATION_ERROR", "displayOrder must be a whole number");
+      payload.displayOrder = value;
+    }
+    if (!partial && (!payload.nameAr || !payload.nameEn || payload.price === undefined || payload.price === null)) {
+      throw httpError(400, "VALIDATION_ERROR", "Arabic name, English name, and price are required");
+    }
+    payload.updatedBy = adminId;
+    if (!partial) payload.createdBy = adminId;
+    return payload;
+  }
+
+  async createPackagingOption(req, res) {
+    try {
+      await ensureCatalog();
+      const payload = this.packagingPayload(req.body, req.auth.userId);
+      if (req.file) payload.image = uploadPublicUrl("packaging", req.file.filename);
+      if (payload.isDefault) { payload.active = true; await packagingOptionModel.updateMany({ isDefault: true }, { $set: { isDefault: false } }); }
+      const option = await packagingOptionModel.create(payload);
+      return res.status(201).json({ success: true, option: serializePackagingOption(option) });
+    } catch (err) { return sendError(res, err); }
+  }
+
+  async updatePackagingOption(req, res) {
+    try {
+      await ensureCatalog();
+      if (!isValidObjectId(req.params.optionId)) throw httpError(400, "VALIDATION_ERROR", "optionId must be valid");
+      const payload = this.packagingPayload(req.body, req.auth.userId, true);
+      const current = await packagingOptionModel.findById(req.params.optionId);
+      if (!current) throw httpError(404, "PACKAGING_OPTION_NOT_FOUND", "Packaging option was not found");
+      if (current.isDefault && (payload.active === false || payload.isDefault === false)) {
+        throw httpError(409, "PACKAGING_DEFAULT_REQUIRED", "Select another default packaging option before changing the current default");
+      }
+      if (req.file) payload.image = uploadPublicUrl("packaging", req.file.filename);
+      if (payload.isDefault) { payload.active = true; await packagingOptionModel.updateMany({ _id: { $ne: req.params.optionId }, isDefault: true }, { $set: { isDefault: false } }); }
+      const option = await packagingOptionModel.findByIdAndUpdate(req.params.optionId, payload, { new: true, runValidators: true });
+      return res.json({ success: true, option: serializePackagingOption(option) });
+    } catch (err) { return sendError(res, err); }
+  }
+
+  async deletePackagingOption(req, res) {
+    try {
+      await ensureCatalog();
+      if (!isValidObjectId(req.params.optionId)) throw httpError(400, "VALIDATION_ERROR", "optionId must be valid");
+      const option = await packagingOptionModel.findById(req.params.optionId);
+      if (!option) throw httpError(404, "PACKAGING_OPTION_NOT_FOUND", "Packaging option was not found");
+      if (option.isDefault) throw httpError(409, "PACKAGING_DEFAULT_REQUIRED", "Select another default packaging option before deleting this one");
+      await option.deleteOne();
+      return res.json({ success: true });
+    } catch (err) { return sendError(res, err); }
+  }
   async listShippingGovernorates(req, res) {
     return res.json({ success: true, governorates: egyptGovernorates });
   }
@@ -306,11 +384,13 @@ class CommerceController {
             shippingAddress: req.body.shippingAddress,
             savedAddressId: req.body.savedAddressId,
             couponCode: req.body.couponCode,
+            packaging: req.body.packaging,
           })
         : await calculateGuestCheckoutPricing({
             cartItems: req.body.cartItems,
             shippingAddress: req.body.shippingAddress,
             couponCode: req.body.couponCode,
+            packaging: req.body.packaging,
           });
       return res.json({
         success: true,
@@ -334,6 +414,7 @@ class CommerceController {
           discount: quote.discount,
           shipping: quote.shipping,
           shippingPromotion: quote.shippingPromotion,
+          packaging: quote.packaging,
           firstOrderEligible: quote.firstOrderEligible,
         },
       });

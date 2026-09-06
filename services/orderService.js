@@ -215,6 +215,14 @@ function itemSnapshot(item) {
   };
 }
 
+function packagingSnapshot(checkout) {
+  return checkout.packaging ? {
+    mode: checkout.packaging.mode,
+    total: checkout.packaging.total,
+    assignments: checkout.packaging.assignments || [],
+  } : null;
+}
+
 function normalizeOrder(order, options = {}) {
   const doc = order && order.toObject ? order.toObject() : order;
   if (!doc) {
@@ -255,6 +263,8 @@ function normalizeOrder(order, options = {}) {
   const shippingSnapshot = doc.pricingSnapshot?.shippingSnapshot || {};
   const totalQuantity = doc.pricingSnapshot?.totalQuantity ?? items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
   const finalShippingFee = doc.shippingFee ?? doc.pricingSnapshot?.shippingFee ?? shippingSnapshot.finalFee ?? shippingSnapshot.chargedFee ?? 0;
+  const packaging = doc.packaging || null;
+  const packagingTotal = doc.packagingTotal ?? doc.pricingSnapshot?.packagingTotal ?? packaging?.total ?? 0;
 
   return {
     _id: String(doc._id),
@@ -285,6 +295,8 @@ function normalizeOrder(order, options = {}) {
     firstOrderPromotionSnapshot: doc.pricingSnapshot?.firstOrderPromotionSnapshot || null,
     bundleDiscountTotal: doc.pricingSnapshot?.bundleDiscountTotal || 0,
     bundleSnapshots: doc.pricingSnapshot?.bundleSnapshots || [],
+    packaging,
+    packagingTotal,
     pricingSnapshot: doc.pricingSnapshot || null,
     totalQuantity,
     shippingBaseCost: shippingSnapshot.baseFee ?? shippingSnapshot.chargedFee ?? finalShippingFee,
@@ -436,7 +448,8 @@ async function createCodOrder(userId, body, idempotencyHeader) {
   const couponCode = String(body.couponCode || "").trim();
   const savedAddressId = body.savedAddressId;
   const customerNote = cleanText(body.customerNote, 500, false);
-  const payloadHash = hashPayload({ shippingAddress, savedAddressId: savedAddressId || "", couponCode, customerNote });
+  const packaging = body.packaging || null;
+  const payloadHash = hashPayload({ shippingAddress, savedAddressId: savedAddressId || "", couponCode, customerNote, packaging });
 
   const existing = await orderModel.findOne({ user: userId, idempotencyKey });
   if (existing) {
@@ -451,6 +464,7 @@ async function createCodOrder(userId, body, idempotencyHeader) {
     shippingAddress,
     savedAddressId,
     couponCode,
+    packaging,
   });
   const orderId = new mongoose.Types.ObjectId();
   const customerSnapshot = await buildRegisteredCustomerSnapshot(userId, checkout.shippingAddress);
@@ -483,6 +497,8 @@ async function createCodOrder(userId, body, idempotencyHeader) {
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
+      packagingTotal: checkout.summary.packagingTotal,
+      packaging: packagingSnapshot(checkout),
       discountSource: checkout.pricingSnapshot.discountSource,
       shippingFee: checkout.summary.shippingFee,
       total: checkout.summary.grandTotal,
@@ -537,7 +553,8 @@ async function createGuestCodOrder(body, idempotencyHeader) {
   const couponCode = String(body.couponCode || "").trim();
   const customerNote = cleanText(body.customerNote, 500, false);
   const idempotencyScope = `guest:${guestIdentityHash(guestCustomer)}:cod`;
-  const payloadHash = hashPayload({ guestCustomer, shippingAddress, cartItems, couponCode, customerNote });
+  const packaging = body.packaging || null;
+  const payloadHash = hashPayload({ guestCustomer, shippingAddress, cartItems, couponCode, customerNote, packaging });
 
   const existing = await orderModel
     .findOne({ customerType: "guest", idempotencyScope, idempotencyKey })
@@ -553,6 +570,7 @@ async function createGuestCodOrder(body, idempotencyHeader) {
     cartItems,
     shippingAddress,
     couponCode,
+    packaging,
   });
   const orderId = new mongoose.Types.ObjectId();
   const customerSnapshot = guestCustomerSnapshot(guestCustomer, shippingAddress);
@@ -588,6 +606,8 @@ async function createGuestCodOrder(body, idempotencyHeader) {
       })),
       subtotal: checkout.summary.merchandiseSubtotal,
       discountTotal: checkout.summary.discountTotal,
+      packagingTotal: checkout.summary.packagingTotal,
+      packaging: packagingSnapshot(checkout),
       discountSource: checkout.pricingSnapshot.discountSource,
       shippingFee: checkout.summary.shippingFee,
       total: checkout.summary.grandTotal,
@@ -822,6 +842,7 @@ module.exports = {
   guestCustomerSnapshot,
   hashPayload,
   itemSnapshot,
+  packagingSnapshot,
   listAdminOrders,
   listMyOrders,
   normalizeOrder,
