@@ -1,6 +1,11 @@
 const orderModel = require("../models/orders");
 const { isValidObjectId } = require("../utils/validation");
 const orderService = require("../services/orderService");
+const whatsappService = require("../services/whatsappService");
+const { normalizeEgyptWhatsAppRecipient } = require("../utils/whatsappPhone");
+const { formatOrderConfirmationRequest } = require("../services/whatsappMessageFormatter");
+
+const confirmationSendsInFlight = new Set();
 
 const disabledOrderResponse = {
   success: false,
@@ -136,6 +141,70 @@ class Order {
         { admin: true }
       );
       return res.json({ success: true, order });
+    } catch (err) {
+      return this.sendServiceError(res, err);
+    }
+  }
+
+  async sendAdminWhatsappConfirmation(req, res) {
+    const orderId = req.params.orderId;
+    if (!isValidObjectId(orderId)) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        error: "Order ID is invalid",
+      });
+    }
+
+    try {
+      const order = await orderModel.findById(orderId).lean();
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          code: "ORDER_NOT_FOUND",
+          error: "Order not found",
+        });
+      }
+
+      const lockKey = String(order._id);
+      if (confirmationSendsInFlight.has(lockKey)) {
+        return res.status(409).json({
+          success: false,
+          code: "WHATSAPP_CONFIRMATION_IN_PROGRESS",
+          error: "A WhatsApp confirmation request is already being sent for this order",
+        });
+      }
+
+      let recipient;
+      try {
+        recipient = normalizeEgyptWhatsAppRecipient(
+          order.shippingAddress?.phone
+          || order.phone
+          || order.customerSnapshot?.phone
+          || order.guestCustomer?.phone
+        );
+      } catch (err) {
+        err.status = 400;
+        throw err;
+      }
+
+      confirmationSendsInFlight.add(lockKey);
+      try {
+        const result = await whatsappService.sendText({
+          recipient,
+          message: formatOrderConfirmationRequest(order),
+        });
+        return res.json({
+          success: true,
+          message: "WhatsApp confirmation request sent successfully",
+          providerMessageId: result.providerMessageId || null,
+        });
+      } catch (err) {
+        err.status = err.code === "OPENWA_DISABLED" ? 503 : 502;
+        throw err;
+      } finally {
+        confirmationSendsInFlight.delete(lockKey);
+      }
     } catch (err) {
       return this.sendServiceError(res, err);
     }

@@ -72,8 +72,31 @@ function formatOrderStatusChanged(order, nextStatus) {
   ].join("\n");
 }
 
+function formatOrderConfirmationRequest(order) {
+  return [
+    "📦 تأكيد الطلب",
+    "",
+    "أهلاً بحضرتك ❤️",
+    "",
+    `بخصوص طلبك رقم #${orderNumber(order)}، حابين نأكد مع حضرتك قبل الشحن.`,
+    "",
+    "⚠️ إحنا لا نطلب عربون أو أي مبلغ مقدم، وكل اللي بنطلبه إن حضرتك لو أكدت الطلب تكون ملتزم باستلامه، علشان ما نتسببش في خسارة تكلفة الشحن والتوصيل.",
+    "",
+    "من فضلك رد علينا بكلمة واحدة فقط:",
+    "",
+    "✅ تأكيد",
+    "لو حضرتك موافق على الطلب وهتستلمه.",
+    "",
+    "❌ رفض",
+    "لو مش محتاج الطلب أو مش هتقدر تستلمه.",
+    "",
+    "شكراً لثقتك في Rosetta ❤️",
+  ].join("\n");
+}
+
 module.exports = {
   STATUS_LABELS,
   formatOrderCreated,
   formatOrderStatusChanged,
+  formatOrderConfirmationRequest,
 };

@@ -66,6 +66,12 @@ router.patch(
   ordersController.patchAdminOrderStatus.bind(ordersController)
 );
 router.post(
+  "/admin/orders/:orderId/whatsapp-confirmation",
+  requireAuth,
+  requireRole("admin"),
+  ordersController.sendAdminWhatsappConfirmation.bind(ordersController)
+);
+router.post(
   "/update-order",
   requireAuth,
   requireRole("admin"),
