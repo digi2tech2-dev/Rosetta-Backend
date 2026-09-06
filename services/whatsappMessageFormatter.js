@@ -5,6 +5,7 @@ const STATUS_LABELS = {
   shipped: "تم شحن الطلب",
   delivered: "تم تسليم الطلب",
   cancelled: "تم إلغاء الطلب",
+  returned: "تم إرجاع الطلب",
 };
 
 const PAYMENT_METHOD_LABELS = {

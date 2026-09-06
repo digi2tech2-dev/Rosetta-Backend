@@ -20,6 +20,7 @@
     "pricing:smoke": "node scripts/pricing-shipping-smoke.js",
     "bundle:smoke": "node scripts/bundle-offers-smoke.js",
     "shipping:unit": "node scripts/shipping-promotion-unit.js",
+    "analytics:unit": "node scripts/realized-analytics-unit.js",
     "paymob:smoke": "node scripts/paymob-payment-smoke.js",
     "paymob:validation": "node scripts/paymob-validation-smoke.js",
     "guest:smoke": "node scripts/guest-checkout-smoke.js",

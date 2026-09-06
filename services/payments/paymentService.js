@@ -146,6 +146,7 @@ function snapshots(checkout) {
     name: item.name,
     image: item.image,
     unitPrice: item.unitPrice,
+    costPrice: item.costPrice,
     quantity: item.quantity,
     lineTotal: item.lineTotal,
     selectedColor: item.selectedColor || null,

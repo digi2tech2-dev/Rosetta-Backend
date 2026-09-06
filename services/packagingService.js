@@ -4,9 +4,9 @@ const { toCents, fromCents } = require("./pricingServiceMoney");
 
 // Seed only an empty catalog. Existing administrator changes are never overwritten.
 const INITIAL_OPTIONS = [
-  { nameAr: "علبة كرتون", nameEn: "Cardboard Box", price: 0, displayOrder: 1, isDefault: true },
-  { nameAr: "علبة مخمل", nameEn: "Velvet Box", price: 100, displayOrder: 2, isDefault: false },
-  { nameAr: "علبة مخمل مضيئة", nameEn: "Lighted Velvet Box", price: 300, displayOrder: 3, isDefault: false },
+  { nameAr: "علبة كرتون", nameEn: "Cardboard Box", price: 0, costPrice: 10, displayOrder: 1, isDefault: true },
+  { nameAr: "علبة مخمل", nameEn: "Velvet Box", price: 100, costPrice: 35, displayOrder: 2, isDefault: false },
+  { nameAr: "علبة مخمل مضيئة", nameEn: "Lighted Velvet Box", price: 300, costPrice: 75, displayOrder: 3, isDefault: false },
 ];
 
 function httpError(status, code, message) {
@@ -30,7 +30,7 @@ function serializePackagingOption(option) {
   return {
     _id: String(source._id), id: String(source._id), nameAr: source.nameAr, nameEn: source.nameEn,
     descriptionAr: source.descriptionAr || "", descriptionEn: source.descriptionEn || "",
-    image: source.image || "", price: Number(source.price) || 0, active: Boolean(source.active),
+    image: source.image || "", price: Number(source.price) || 0, costPrice: Number(source.costPrice) || 0, active: Boolean(source.active),
     displayOrder: Number(source.displayOrder) || 0, isDefault: Boolean(source.isDefault),
     createdAt: source.createdAt, updatedAt: source.updatedAt,
   };
@@ -91,12 +91,13 @@ async function resolvePackagingSelections(raw, items) {
   const snapshotAssignments = assignments.map((entry) => {
     const option = byId.get(entry.optionId);
     const priceCents = toCents(option.price);
+    const costCents = toCents(option.costPrice || 0);
     totalCents += priceCents;
     const item = items[entry.itemIndex];
     return {
       itemIndex: entry.itemIndex, product: String(item.productId), productName: item.name, unitIndex: entry.unitIndex,
       packagingOptionId: String(option._id), nameAr: option.nameAr, nameEn: option.nameEn,
-      image: option.image || "", unitPrice: fromCents(priceCents), quantity: 1,
+      image: option.image || "", unitPrice: fromCents(priceCents), costPrice: fromCents(costCents), quantity: 1,
     };
   });
   return { mode: requested.mode === "default" ? "same" : requested.mode, assignments: snapshotAssignments, total: fromCents(totalCents), totalCents };

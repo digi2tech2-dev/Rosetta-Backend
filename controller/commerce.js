@@ -295,13 +295,14 @@ class CommerceController {
   }
 
   packagingPayload(body, adminId, partial = false) {
-    const allowed = pickAllowed(body || {}, ["nameAr", "nameEn", "descriptionAr", "descriptionEn", "price", "active", "displayOrder", "isDefault"]);
+    const allowed = pickAllowed(body || {}, ["nameAr", "nameEn", "descriptionAr", "descriptionEn", "price", "costPrice", "active", "displayOrder", "isDefault"]);
     const payload = {};
     if (allowed.nameAr !== undefined) payload.nameAr = String(allowed.nameAr || "").trim();
     if (allowed.nameEn !== undefined) payload.nameEn = String(allowed.nameEn || "").trim();
     if (allowed.descriptionAr !== undefined) payload.descriptionAr = String(allowed.descriptionAr || "").trim().slice(0, 300);
     if (allowed.descriptionEn !== undefined) payload.descriptionEn = String(allowed.descriptionEn || "").trim().slice(0, 300);
     if (allowed.price !== undefined) payload.price = nullableMoney(allowed.price, "price");
+    if (allowed.costPrice !== undefined) payload.costPrice = nullableMoney(allowed.costPrice, "costPrice");
     if (allowed.active !== undefined) payload.active = allowed.active === true || allowed.active === "true";
     if (allowed.isDefault !== undefined) payload.isDefault = allowed.isDefault === true || allowed.isDefault === "true";
     if (allowed.displayOrder !== undefined) {
@@ -309,8 +310,8 @@ class CommerceController {
       if (!Number.isInteger(value)) throw httpError(400, "VALIDATION_ERROR", "displayOrder must be a whole number");
       payload.displayOrder = value;
     }
-    if (!partial && (!payload.nameAr || !payload.nameEn || payload.price === undefined || payload.price === null)) {
-      throw httpError(400, "VALIDATION_ERROR", "Arabic name, English name, and price are required");
+    if (!partial && (!payload.nameAr || !payload.nameEn || payload.price === undefined || payload.price === null || payload.costPrice === undefined || payload.costPrice === null)) {
+      throw httpError(400, "VALIDATION_ERROR", "Arabic name, English name, selling price, and cost price are required");
     }
     payload.updatedBy = adminId;
     if (!partial) payload.createdBy = adminId;

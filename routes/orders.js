@@ -59,6 +59,12 @@ router.get(
   requireRole("admin"),
   ordersController.getAdminOrder.bind(ordersController)
 );
+router.get(
+  "/admin/analytics",
+  requireAuth,
+  requireRole("admin"),
+  ordersController.getAdminAnalytics.bind(ordersController)
+);
 router.patch(
   "/admin/orders/:orderId/status",
   requireAuth,

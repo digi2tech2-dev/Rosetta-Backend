@@ -11,6 +11,7 @@ const packagingOptionSchema = new mongoose.Schema(
     descriptionEn: { type: String, default: "", trim: true, maxlength: 300 },
     image: { type: String, default: "", trim: true, maxlength: 500 },
     price: { type: Number, required: true, min: 0 },
+    costPrice: { type: Number, required: true, min: 0, default: 0 },
     active: { type: Boolean, default: true },
     displayOrder: { type: Number, default: 0 },
     isDefault: { type: Boolean, default: false },

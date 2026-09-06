@@ -1,6 +1,7 @@
 const orderModel = require("../models/orders");
 const { isValidObjectId } = require("../utils/validation");
 const orderService = require("../services/orderService");
+const { calculateAnalytics } = require("../services/analyticsService");
 const whatsappService = require("../services/whatsappService");
 const { normalizeEgyptWhatsAppRecipient } = require("../utils/whatsappPhone");
 const { formatOrderConfirmationRequest } = require("../services/whatsappMessageFormatter");
@@ -132,13 +133,24 @@ class Order {
     }
   }
 
+  async getAdminAnalytics(req, res) {
+    try {
+      // Financial aggregation is deliberately server-authoritative. The
+      // service uses only immutable order snapshots, never product catalog data.
+      const orders = await orderModel.find({}).lean();
+      return res.json(calculateAnalytics(orders, req.query));
+    } catch (err) {
+      return this.sendServiceError(res, err);
+    }
+  }
+
   async patchAdminOrderStatus(req, res) {
     try {
       const order = await orderService.updateStatus(
         req.params.orderId,
         req.body.orderStatus,
         req.auth.userId,
-        { admin: true }
+        { admin: true, restoreReturnedInventory: req.body.restoreReturnedInventory }
       );
       return res.json({ success: true, order });
     } catch (err) {
@@ -212,7 +224,7 @@ class Order {
 
   async postUpdateOrder(req, res, next) {
     try {
-      const { oId, status } = req.body;
+      const { oId, status, restoreReturnedInventory } = req.body;
       if (!isValidObjectId(oId) || !status) {
         return res.status(400).json({ message: "All filled must be required" });
       }
@@ -223,8 +235,9 @@ class Order {
         Shipped: "shipped",
         Delivered: "delivered",
         Cancelled: "cancelled",
+        Returned: "returned",
       }[status] || status;
-      const order = await orderService.updateStatus(oId, canonical, req.auth.userId, { admin: true });
+      const order = await orderService.updateStatus(oId, canonical, req.auth.userId, { admin: true, restoreReturnedInventory });
       return res.json({ success: "Order updated successfully", order });
     } catch (err) {
       return this.sendServiceError(res, err);

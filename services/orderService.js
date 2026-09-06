@@ -28,16 +28,17 @@ const {
   verifyTrackingToken,
 } = require("./guestCheckoutService");
 
-const ORDER_STATUSES = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"];
+const ORDER_STATUSES = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"];
 const PAYMENT_STATUSES = ["unpaid", "pending", "paid", "refunded", "failed", "expired", "cancelled", "manual_review"];
 const PAYMOB_ORDER_METHODS = ["paymob_card", "paymob_wallet"];
 const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
   confirmed: ["processing", "cancelled"],
   processing: ["shipped", "cancelled"],
-  shipped: ["delivered"],
-  delivered: [],
+  shipped: ["delivered", "returned"],
+  delivered: ["returned"],
   cancelled: [],
+  returned: [],
 };
 
 function httpError(status, code, message, extra) {
@@ -135,6 +136,7 @@ function legacyStatusToCanonical(status) {
     Shipped: "shipped",
     Delivered: "delivered",
     Cancelled: "cancelled",
+    Returned: "returned",
   };
   return map[status] || status || "pending";
 }
@@ -147,6 +149,7 @@ function canonicalToLegacyStatus(status) {
     shipped: "Shipped",
     delivered: "Delivered",
     cancelled: "Cancelled",
+    returned: "Returned",
   };
   return map[status] || status;
 }
@@ -204,6 +207,7 @@ function itemSnapshot(item) {
     name: item.name,
     image: item.image,
     unitPrice: item.unitPrice,
+    costPrice: item.costPrice,
     quantity: item.quantity,
     lineTotal: item.lineTotal,
     selectedColor: item.selectedColor || null,
@@ -243,7 +247,7 @@ function normalizeOrder(order, options = {}) {
         bundleOfferId: item.bundleOfferId || null,
         bundleGroupId: item.bundleGroupId || null,
         bundleRole: item.bundleRole || null,
-        ...(options.admin ? { merchantName: item.merchantName || null, pMerchantName: item.merchantName || null } : {}),
+        ...(options.admin ? { merchantName: item.merchantName || null, pMerchantName: item.merchantName || null, costPrice: item.costPrice ?? null } : {}),
       }))
     : (doc.allProduct || []).map((item) => ({
         productId: String(item.id && item.id._id ? item.id._id : item.id),
@@ -326,6 +330,9 @@ function normalizeOrder(order, options = {}) {
     paymentStatus,
     providerTransactionId: doc.providerTransactionId || doc.transactionId || "",
     paymentExpiresAt: doc.paymentExpiresAt || null,
+    deliveredAt: doc.deliveredAt || null,
+    returnedAt: doc.returnedAt || null,
+    returnedInventoryRestored: Boolean(doc.returnedInventoryRestored),
     orderStatus: canonicalStatus,
     status: canonicalToLegacyStatus(canonicalStatus),
     transactionId: doc.transactionId || "",
@@ -746,7 +753,7 @@ async function updateStatus(orderId, nextStatus, adminUserId, options = {}) {
   if (!ORDER_STATUSES.includes(nextStatus)) {
     throw httpError(400, "VALIDATION_ERROR", "Invalid order status");
   }
-  const order = await orderModel.findById(orderId);
+  const order = await orderModel.findById(orderId).select("+returnedInventoryRestorationClaimed");
   if (!order) {
     throw httpError(404, "NOT_FOUND", "Order not found");
   }
@@ -758,11 +765,11 @@ async function updateStatus(orderId, nextStatus, adminUserId, options = {}) {
     throw httpError(409, "CONFLICT", `Cannot transition order from ${current} to ${nextStatus}`);
   }
 
+  const stockItems = (order.items && order.items.length ? order.items : order.allProduct || []).map((item) => ({
+    productId: item.product || item.id,
+    quantity: item.quantity || item.quantitiy,
+  }));
   if (nextStatus === "cancelled" && order.inventoryApplied && !order.inventoryRestored) {
-    const stockItems = (order.items || []).map((item) => ({
-      productId: item.product,
-      quantity: item.quantity,
-    }));
     await restoreStock(stockItems);
     order.inventoryRestored = true;
   }
@@ -771,6 +778,36 @@ async function updateStatus(orderId, nextStatus, adminUserId, options = {}) {
   }
   if (nextStatus === "delivered" && order.paymentMethod === "cash_on_delivery") {
     order.paymentStatus = "paid";
+  }
+  if (nextStatus === "returned") {
+    // A return is an operational status only. It must not manufacture a
+    // provider refund or alter the verified Paymob payment state.
+    if (options.restoreReturnedInventory === true && order.inventoryApplied && !order.returnedInventoryRestored) {
+      // Claim restoration atomically before touching stock. This makes two
+      // simultaneous status requests harmless while allowing a failed restore
+      // to release its claim for a later retry.
+      const statusClaimFilter = order.orderStatus
+        ? { orderStatus: current }
+        : { orderStatus: { $exists: false }, status: canonicalToLegacyStatus(current) };
+      const claim = await orderModel.updateOne(
+        { _id: order._id, ...statusClaimFilter, returnedInventoryRestored: { $ne: true }, returnedInventoryRestorationClaimed: { $ne: true } },
+        { $set: { returnedInventoryRestorationClaimed: true } }
+      );
+      if (claim.modifiedCount === 1 || claim.nModified === 1) {
+        try {
+          await restoreStock(stockItems);
+          order.returnedInventoryRestored = true;
+          order.returnedInventoryRestorationClaimed = false;
+        } catch (err) {
+          await orderModel.updateOne({ _id: order._id }, { $set: { returnedInventoryRestorationClaimed: false } });
+          throw err;
+        }
+      }
+    }
+    order.returnedAt = new Date();
+  }
+  if (nextStatus === "delivered" && !order.deliveredAt) {
+    order.deliveredAt = new Date();
   }
 
   order.orderStatus = nextStatus;

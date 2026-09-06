@@ -473,6 +473,29 @@ async function main() {
       assert(res.body.order.paymentStatus === "paid", "delivered COD not marked paid");
     });
 
+    await test("Returning a delivered order restores inventory once without changing payment status", async () => {
+      const before = await productModel.findById(seeded.productA._id);
+      const returned = await request(`/api/order/admin/orders/${createdOrderId}/status`, {
+        method: "PATCH",
+        token: seeded.adminToken,
+        body: { orderStatus: "returned", restoreReturnedInventory: true },
+      });
+      const after = await productModel.findById(seeded.productA._id);
+      assert(returned.status === 200, "return failed");
+      assert(returned.body.order.orderStatus === "returned", "order was not marked returned");
+      assert(returned.body.order.returnedInventoryRestored === true, "returned inventory was not recorded");
+      assert(returned.body.order.paymentStatus === "paid", "return changed payment status");
+      assert(after.pQuantity > before.pQuantity, "return did not restore stock");
+      const repeated = await request(`/api/order/admin/orders/${createdOrderId}/status`, {
+        method: "PATCH",
+        token: seeded.adminToken,
+        body: { orderStatus: "returned", restoreReturnedInventory: true },
+      });
+      const afterRepeated = await productModel.findById(seeded.productA._id);
+      assert(repeated.status === 200, "repeated return should be idempotent");
+      assert(afterRepeated.pQuantity === after.pQuantity, "return restored stock twice");
+    });
+
     await test("Cancelling an eligible order restores stock", async () => {
       await request("/api/cart/items", {
         method: "POST",
@@ -509,6 +532,35 @@ async function main() {
       assert(after.pQuantity === before.pQuantity, "stock restored twice");
     });
 
+    await test("Returning with no inventory restore leaves stock unchanged", async () => {
+      await request("/api/cart/items", {
+        method: "POST",
+        token: seeded.customerToken,
+        body: { productId: seeded.productB._id, quantity: 1 },
+      });
+      const create = await request("/api/order/create-cod-order", {
+        method: "POST",
+        token: seeded.customerToken,
+        headers: { "Idempotency-Key": `${TEST_PREFIX}return-no-stock` },
+        body: { shippingAddress },
+      });
+      const orderId = create.body.order.id;
+      for (const orderStatus of ["confirmed", "processing", "shipped", "delivered"]) {
+        const transition = await request(`/api/order/admin/orders/${orderId}/status`, {
+          method: "PATCH", token: seeded.adminToken, body: { orderStatus },
+        });
+        assert(transition.status === 200, `transition to ${orderStatus} failed`);
+      }
+      const before = await productModel.findById(seeded.productB._id);
+      const returned = await request(`/api/order/admin/orders/${orderId}/status`, {
+        method: "PATCH", token: seeded.adminToken, body: { orderStatus: "returned", restoreReturnedInventory: false },
+      });
+      const after = await productModel.findById(seeded.productB._id);
+      assert(returned.status === 200, "return without restoration failed");
+      assert(returned.body.order.returnedInventoryRestored === false, "return unexpectedly restored inventory");
+      assert(after.pQuantity === before.pQuantity, "stock changed despite no restore selection");
+    });
+
     await test("Cancelled order cannot be delivered", async () => {
       const res = await request(`/api/order/admin/orders/${cancelledOrderId}/status`, {
         method: "PATCH",
@@ -518,13 +570,13 @@ async function main() {
       assert(res.status === 409, "cancelled order delivered");
     });
 
-    await test("Delivered order cannot be cancelled", async () => {
+    await test("Returned order cannot be cancelled", async () => {
       const res = await request(`/api/order/admin/orders/${createdOrderId}/status`, {
         method: "PATCH",
         token: seeded.adminToken,
         body: { orderStatus: "cancelled" },
       });
-      assert(res.status === 409, "delivered order cancelled");
+      assert(res.status === 409, "returned order cancelled");
     });
 
     await test("Out-of-stock order attempt leaves cart intact", async () => {

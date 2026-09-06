@@ -7,6 +7,9 @@ const orderItemSnapshotSchema = new mongoose.Schema(
     name: { type: String, required: true },
     image: { type: String },
     unitPrice: { type: Number, required: true },
+    // Immutable product cost at checkout. Null is intentionally retained for
+    // legacy orders created before cost snapshots existed.
+    costPrice: { type: Number, default: null, min: 0 },
     quantity: { type: Number, required: true },
     lineTotal: { type: Number, required: true },
     selectedColor: { type: String, default: null },
@@ -164,7 +167,7 @@ const packagingAssignmentSnapshotSchema = new mongoose.Schema(
   {
     itemIndex: Number, product: String, productName: String, unitIndex: Number,
     packagingOptionId: String, nameAr: String, nameEn: String, image: String,
-    unitPrice: Number, quantity: { type: Number, default: 1 },
+    unitPrice: Number, costPrice: { type: Number, default: null, min: 0 }, quantity: { type: Number, default: 1 },
   },
   { _id: false }
 );
@@ -247,6 +250,7 @@ const orderSchema = new mongoose.Schema(
         "Shipped",
         "Delivered",
         "Cancelled",
+        "Returned",
       ],
     },
     items: {
@@ -287,7 +291,7 @@ const orderSchema = new mongoose.Schema(
     paymentExpiresAt: Date,
     orderStatus: {
       type: String,
-      enum: ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"],
+      enum: ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"],
     },
     customerNote: String,
     coupon: { type: ObjectId, ref: "coupons", default: null },
@@ -305,6 +309,17 @@ const orderSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    returnedInventoryRestored: {
+      type: Boolean,
+      default: false,
+    },
+    returnedInventoryRestorationClaimed: {
+      type: Boolean,
+      default: false,
+      select: false,
+    },
+    deliveredAt: { type: Date, default: null },
+    returnedAt: { type: Date, default: null },
     statusHistory: {
       type: [statusHistorySchema],
       default: undefined,
