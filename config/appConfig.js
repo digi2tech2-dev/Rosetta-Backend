@@ -110,6 +110,8 @@ const config = {
   whatsappMaxAttempts: readInt("WHATSAPP_MAX_ATTEMPTS", 5),
   whatsappDispatchBatchSize: readInt("WHATSAPP_DISPATCH_BATCH_SIZE", 10),
   whatsappLockTimeoutMs: readInt("WHATSAPP_LOCK_TIMEOUT_MS", 120000),
+  whatsappMinSendIntervalMs: readInt("WHATSAPP_MIN_SEND_INTERVAL_MS", 25000),
+  whatsappDispatchLeaseTimeoutMs: readInt("WHATSAPP_DISPATCH_LEASE_TIMEOUT_MS", 600000),
 };
 
 function validateConfig() {
@@ -228,6 +230,20 @@ function validateConfig() {
   }
   if (config.whatsappLockTimeoutMs <= config.openwaTimeoutMs) {
     throw new Error("WHATSAPP_LOCK_TIMEOUT_MS must be greater than OPENWA_TIMEOUT_MS");
+  }
+  if (!Number.isSafeInteger(config.whatsappMinSendIntervalMs) || config.whatsappMinSendIntervalMs < 1000 || config.whatsappMinSendIntervalMs > 3600000) {
+    throw new Error("WHATSAPP_MIN_SEND_INTERVAL_MS must be a whole number from 1000 to 3600000");
+  }
+  if (!Number.isSafeInteger(config.whatsappDispatchLeaseTimeoutMs) || config.whatsappDispatchLeaseTimeoutMs < 60000 || config.whatsappDispatchLeaseTimeoutMs > 86400000) {
+    throw new Error("WHATSAPP_DISPATCH_LEASE_TIMEOUT_MS must be a whole number from 60000 to 86400000");
+  }
+  const minimumDispatcherLeaseMs = (
+    config.whatsappDispatchBatchSize * config.openwaTimeoutMs
+    + Math.max(config.whatsappDispatchBatchSize - 1, 0) * config.whatsappMinSendIntervalMs
+    + 60000
+  );
+  if (config.whatsappDispatchLeaseTimeoutMs < minimumDispatcherLeaseMs) {
+    throw new Error("WHATSAPP_DISPATCH_LEASE_TIMEOUT_MS is too short for the configured paced WhatsApp batch");
   }
 }
 

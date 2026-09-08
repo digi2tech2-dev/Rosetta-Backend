@@ -1,7 +1,9 @@
 const assert = require("assert");
 const orderModel = require("../models/orders");
+const notificationOutboxModel = require("../models/notificationOutbox");
 const { ordersController } = require("../controller/orders");
 const whatsappService = require("../services/whatsappService");
+const { config } = require("../config/appConfig");
 const { requireRole } = require("../middleware/auth");
 
 const ORDER_ID = "507f1f77bcf86cd799439011";
@@ -34,28 +36,52 @@ async function send(orderId = ORDER_ID) {
 }
 
 async function main() {
-  const originalFindById = orderModel.findById;
-  const originalSendText = whatsappService.sendText;
+  const original = {
+    findById: orderModel.findById,
+    create: notificationOutboxModel.create,
+    sendText: whatsappService.sendText,
+    openwaEnabled: config.openwaEnabled,
+  };
   let currentOrder = baseOrder();
-  let sendCalls = [];
+  const queuedEvents = [];
 
   orderModel.findById = () => ({ lean: async () => currentOrder });
-  whatsappService.sendText = async (payload) => {
-    sendCalls.push(payload);
-    return { providerMessageId: "message-1" };
+  notificationOutboxModel.create = async (event) => {
+    if (queuedEvents.some((queued) => queued.eventKey === event.eventKey)) {
+      const err = new Error("duplicate");
+      err.code = 11000;
+      throw err;
+    }
+    queuedEvents.push(event);
+    return event;
   };
+  whatsappService.sendText = async () => {
+    throw new Error("manual confirmation must not call OpenWA directly");
+  };
+  config.openwaEnabled = true;
 
   try {
     const before = JSON.parse(JSON.stringify(currentOrder));
     const success = await send();
-    assert.strictEqual(success.statusCode, 200);
+    assert.strictEqual(success.statusCode, 202);
     assert.strictEqual(success.body.success, true);
-    assert.strictEqual(sendCalls.length, 1);
-    assert.strictEqual(sendCalls[0].recipient, "201012345678");
-    assert.match(sendCalls[0].message, /#ROS-12345/);
-    assert.match(sendCalls[0].message, /✅ تأكيد/);
-    assert.match(sendCalls[0].message, /❌ رفض/);
-    assert.deepStrictEqual(currentOrder, before, "confirmation sending must not change the order");
+    assert.strictEqual(success.body.queued, true);
+    assert.strictEqual(success.body.duplicate, false);
+    assert.strictEqual(queuedEvents.length, 1);
+    assert.strictEqual(queuedEvents[0].eventType, "admin_order_confirmation");
+    assert.strictEqual(queuedEvents[0].eventKey, `order:${ORDER_ID}:admin-confirmation`);
+    assert.strictEqual(queuedEvents[0].recipient, "201012345678");
+    assert.match(queuedEvents[0].message, /#ROS-12345/);
+    assert.match(queuedEvents[0].message, /✅ تأكيد/);
+    assert.match(queuedEvents[0].message, /❌ رفض/);
+    assert.deepStrictEqual(currentOrder, before, "confirmation queuing must not change the order");
+
+    const duplicate = await send();
+    assert.strictEqual(duplicate.statusCode, 200);
+    assert.strictEqual(duplicate.body.success, true);
+    assert.strictEqual(duplicate.body.queued, true);
+    assert.strictEqual(duplicate.body.duplicate, true);
+    assert.strictEqual(queuedEvents.length, 1, "duplicate confirmation must not create another event");
 
     const forbidden = response();
     let nextCalled = false;
@@ -64,43 +90,17 @@ async function main() {
     assert.strictEqual(nextCalled, false);
 
     currentOrder = { ...baseOrder(), shippingAddress: { phone: "invalid" } };
-    sendCalls = [];
     const invalidPhone = await send();
     assert.strictEqual(invalidPhone.statusCode, 400);
     assert.strictEqual(invalidPhone.body.code, "INVALID_RECIPIENT");
-    assert.strictEqual(sendCalls.length, 0);
-
-    currentOrder = baseOrder();
-    whatsappService.sendText = async () => {
-      throw Object.assign(new Error("OpenWA authentication failed"), { code: "OPENWA_AUTH_FAILED", status: 401 });
-    };
-    const openwaFailure = await send();
-    assert.strictEqual(openwaFailure.statusCode, 502);
-    assert.strictEqual(openwaFailure.body.code, "OPENWA_AUTH_FAILED");
-    assert.strictEqual(currentOrder.orderStatus, "pending");
-
-    currentOrder = baseOrder();
-    let releaseSend;
-    let concurrentCalls = 0;
-    whatsappService.sendText = () => {
-      concurrentCalls += 1;
-      return new Promise((resolve) => { releaseSend = () => resolve({ providerMessageId: "message-2" }); });
-    };
-    const first = send();
-    await Promise.resolve();
-    await Promise.resolve();
-    const second = await send();
-    assert.strictEqual(second.statusCode, 409);
-    assert.strictEqual(second.body.code, "WHATSAPP_CONFIRMATION_IN_PROGRESS");
-    assert.strictEqual(concurrentCalls, 1);
-    releaseSend();
-    const firstResult = await first;
-    assert.strictEqual(firstResult.statusCode, 200);
+    assert.strictEqual(queuedEvents.length, 1);
 
     console.log("ADMIN_WHATSAPP_CONFIRMATION_UNIT_PASS");
   } finally {
-    orderModel.findById = originalFindById;
-    whatsappService.sendText = originalSendText;
+    orderModel.findById = original.findById;
+    notificationOutboxModel.create = original.create;
+    whatsappService.sendText = original.sendText;
+    config.openwaEnabled = original.openwaEnabled;
   }
 }
 

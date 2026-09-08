@@ -2,11 +2,8 @@ const orderModel = require("../models/orders");
 const { isValidObjectId } = require("../utils/validation");
 const orderService = require("../services/orderService");
 const { calculateAnalytics } = require("../services/analyticsService");
-const whatsappService = require("../services/whatsappService");
 const { normalizeEgyptWhatsAppRecipient } = require("../utils/whatsappPhone");
-const { formatOrderConfirmationRequest } = require("../services/whatsappMessageFormatter");
-
-const confirmationSendsInFlight = new Set();
+const { enqueueAdminOrderConfirmation } = require("../services/orderNotificationService");
 
 const disabledOrderResponse = {
   success: false,
@@ -178,15 +175,6 @@ class Order {
         });
       }
 
-      const lockKey = String(order._id);
-      if (confirmationSendsInFlight.has(lockKey)) {
-        return res.status(409).json({
-          success: false,
-          code: "WHATSAPP_CONFIRMATION_IN_PROGRESS",
-          error: "A WhatsApp confirmation request is already being sent for this order",
-        });
-      }
-
       let recipient;
       try {
         recipient = normalizeEgyptWhatsAppRecipient(
@@ -200,23 +188,21 @@ class Order {
         throw err;
       }
 
-      confirmationSendsInFlight.add(lockKey);
-      try {
-        const result = await whatsappService.sendText({
-          recipient,
-          message: formatOrderConfirmationRequest(order),
-        });
-        return res.json({
-          success: true,
-          message: "WhatsApp confirmation request sent successfully",
-          providerMessageId: result.providerMessageId || null,
-        });
-      } catch (err) {
-        err.status = err.code === "OPENWA_DISABLED" ? 503 : 502;
-        throw err;
-      } finally {
-        confirmationSendsInFlight.delete(lockKey);
+      const queued = await enqueueAdminOrderConfirmation(order, { recipient });
+      if (queued.skipped === "disabled") {
+        throw Object.assign(new Error("OpenWA is disabled"), { status: 503, code: "OPENWA_DISABLED" });
       }
+      if (queued.skipped) {
+        throw Object.assign(new Error("Unable to queue WhatsApp confirmation"), { status: 503, code: "WHATSAPP_CONFIRMATION_QUEUE_FAILED" });
+      }
+      return res.status(queued.enqueued ? 202 : 200).json({
+        success: true,
+        queued: true,
+        duplicate: Boolean(queued.duplicate),
+        message: queued.duplicate
+          ? "WhatsApp confirmation request is already queued for this order"
+          : "WhatsApp confirmation request queued for sending",
+      });
     } catch (err) {
       return this.sendServiceError(res, err);
     }

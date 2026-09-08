@@ -76,10 +76,26 @@ async function main() {
     assert.strictEqual(invalidEvent.status, "dead");
     assert.strictEqual(invalidEvent.lastErrorCode, "INVALID_RECIPIENT");
 
+    const statusEvents = [];
+    notificationOutboxModel.create = async (event) => { statusEvents.push(event); return event; };
+    assert.strictEqual((await enqueueOrderStatusChanged({ ...order, shippingAddress: { phone: "01012345678" } }, "pending", "confirmed")).skipped, "non_customer_facing_status");
+    assert.strictEqual((await enqueueOrderStatusChanged({ ...order, shippingAddress: { phone: "01012345678" } }, "confirmed", "processing")).skipped, "non_customer_facing_status");
+    for (const [previousStatus, nextStatus] of [["processing", "shipped"], ["shipped", "delivered"], ["pending", "cancelled"], ["shipped", "returned"]]) {
+      await enqueueOrderStatusChanged({ ...order, shippingAddress: { phone: "01012345678" } }, previousStatus, nextStatus);
+    }
+    await enqueueOrderCreated({ ...order, shippingAddress: { phone: "01012345678" } });
+    assert.deepStrictEqual(statusEvents.map((event) => event.eventKey), [
+      "order:order-test:status:processing:shipped",
+      "order:order-test:status:shipped:delivered",
+      "order:order-test:status:pending:cancelled",
+      "order:order-test:status:shipped:returned",
+      "order:order-test:created",
+    ]);
+
     notificationOutboxModel.create = async () => { const err = new Error("duplicate"); err.code = 11000; throw err; };
     const duplicate = await enqueueOrderCreated({ ...order, shippingAddress: { phone: "01012345678" } });
     assert.strictEqual(duplicate.duplicate, true);
-    const statusDuplicate = await enqueueOrderStatusChanged({ ...order, shippingAddress: { phone: "01012345678" } }, "pending", "confirmed");
+    const statusDuplicate = await enqueueOrderStatusChanged({ ...order, shippingAddress: { phone: "01012345678" } }, "processing", "shipped");
     assert.strictEqual(statusDuplicate.duplicate, true);
   } finally {
     config.openwaEnabled = original.openwaEnabled;

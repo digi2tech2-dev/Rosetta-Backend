@@ -63,4 +63,4 @@ async function sendText({ recipient, message }) {
   }
 }
 
-module.exports = { sendText };
+module.exports = { classifyHttpFailure, sendText };

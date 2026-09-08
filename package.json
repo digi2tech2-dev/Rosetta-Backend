@@ -28,7 +28,10 @@
     "payment:expire": "node scripts/payment-expiry-sweep.js",
     "whatsapp:dispatch": "node scripts/notification-dispatch.js",
     "whatsapp:unit": "node scripts/whatsapp-notification-unit.js",
+    "whatsapp:dispatcher:unit": "node scripts/notification-dispatcher-unit.js",
+    "whatsapp:dispatcher:readiness:unit": "node scripts/notification-dispatcher-readiness-unit.js",
     "whatsapp:confirmation:unit": "node scripts/admin-whatsapp-confirmation-unit.js",
+    "paymob:notification:unit": "node scripts/paymob-notification-unit.js",
     "database:readiness": "node scripts/database-readiness.js",
     "admin:create": "node scripts/create-admin.js",
     "release:check": "node scripts/release-readiness.js"

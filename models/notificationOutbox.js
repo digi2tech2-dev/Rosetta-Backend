@@ -5,7 +5,7 @@ const notificationOutboxSchema = new mongoose.Schema(
   {
     eventKey: { type: String, required: true, unique: true, index: true },
     channel: { type: String, enum: ["whatsapp"], required: true, default: "whatsapp" },
-    eventType: { type: String, enum: ["order_created", "order_status_changed"], required: true },
+    eventType: { type: String, enum: ["order_created", "order_status_changed", "admin_order_confirmation"], required: true },
     order: { type: ObjectId, ref: "orders", required: true, index: true },
     recipient: { type: String, required: true },
     payload: { type: mongoose.Schema.Types.Mixed, default: {} },

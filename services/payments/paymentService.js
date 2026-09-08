@@ -23,7 +23,7 @@ const {
 } = require("../guestCheckoutService");
 const { PaymobAdapter, buildCheckoutUrl } = require("./paymobAdapter");
 const { FakePaymobAdapter } = require("./fakePaymobAdapter");
-const { enqueueOrderCreated } = require("../orderNotificationService");
+const orderNotificationService = require("../orderNotificationService");
 
 const PAYMENT_METHODS = {
   card: { orderMethod: "paymob_card", integration: () => config.paymobCardIntegrationId },
@@ -687,6 +687,11 @@ function webhookDigest(obj) {
   return crypto.createHash("sha256").update(JSON.stringify(obj)).digest("hex");
 }
 
+async function notifyVerifiedPaymobPayment(order, paymentConfirmed) {
+  if (!paymentConfirmed) return { skipped: "payment_not_confirmed" };
+  return orderNotificationService.enqueueOrderCreated(order, { paymentPending: false });
+}
+
 async function processPaymobWebhook(body, query = {}) {
   if (!config.paymobEnabled || !config.paymobHmacSecret) {
     throw httpError(503, "PAYMENT_PROVIDER_UNAVAILABLE", "Payment provider is unavailable");
@@ -712,7 +717,7 @@ async function processPaymobWebhook(body, query = {}) {
   const eventId = `${transactionId}:${obj.success}:${obj.pending}:${obj.amount_cents}`;
   if ((attempt.webhookEvents || []).some((event) => event.providerEventId === eventId)) {
     if (attempt.status === "paid" && order.paymentStatus === "paid" && boolValue(obj.success) && !boolValue(obj.pending)) {
-      await enqueueOrderCreated(order, { paymentPending: false });
+      await notifyVerifiedPaymobPayment(order, true);
     }
     return { accepted: true, duplicate: true };
   }
@@ -771,9 +776,7 @@ async function processPaymobWebhook(body, query = {}) {
   }
   await attempt.save();
   await order.save();
-  if (paymentConfirmed) {
-    await enqueueOrderCreated(order, { paymentPending: false });
-  }
+  await notifyVerifiedPaymobPayment(order, paymentConfirmed);
   return { accepted: true };
 }
 
@@ -886,6 +889,7 @@ module.exports = {
   expirePendingAttempts,
   getGuestPaymentStatus,
   getPaymentStatus,
+  notifyVerifiedPaymobPayment,
   processPaymobWebhook,
   buildProviderItemsForCheckout: providerItems,
   timingSafeEqualHex,
